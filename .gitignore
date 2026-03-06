@@ -1,0 +1,30 @@
+# Config with secrets
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Logs and data
+logs/*.log
+data/*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore

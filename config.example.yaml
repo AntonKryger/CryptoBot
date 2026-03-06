@@ -1,0 +1,98 @@
+# CryptoBot Configuration
+# Copy this file to config.yaml and fill in your details
+
+# Capital.com API
+capital:
+  email: "your-email@example.com"
+  password: "your-password"
+  api_key: "your-api-key"
+  demo: true  # true = demo account, false = live account
+  base_url: "https://demo-api-capital.backend-capital.com"  # demo server
+
+# Trading settings
+trading:
+  coins:
+    - "BTCUSD"
+    - "ETHUSD"
+    - "SOLUSD"
+    - "XRPUSD"
+    - "ADAUSD"
+    - "DOGEUSD"
+    - "AVAXUSD"
+    - "DOTUSD"
+    - "LINKUSD"
+    - "MATICUSD"
+  leverage: 2
+  timeframe: "MINUTE_15"  # 15-minute candles
+  scan_interval: 60  # seconds between scans
+
+# Risk profile: conservative, moderate, aggressive
+risk:
+  profile: "moderate_aggressive"
+
+  # Stop-loss and take-profit (in percent)
+  stop_loss: 4.0
+  take_profit: 7.0
+  trailing_stop_trigger: 3.0  # activate trailing stop at +3%
+
+  # Position sizing
+  max_position_pct: 20  # max 20% of portfolio per trade
+  max_open_positions: 5
+
+  # Kill switch
+  daily_loss_limit: 5.0    # stop trading if -5% in one day
+  total_loss_limit: 30.0   # stop all trading if portfolio drops 30%
+
+# Risk profiles (presets)
+profiles:
+  conservative:
+    stop_loss: 2.0
+    take_profit: 4.0
+    trailing_stop_trigger: 2.0
+    max_position_pct: 15
+    max_open_positions: 3
+
+  moderate:
+    stop_loss: 3.5
+    take_profit: 6.0
+    trailing_stop_trigger: 3.0
+    max_position_pct: 20
+    max_open_positions: 4
+
+  moderate_aggressive:
+    stop_loss: 4.0
+    take_profit: 7.0
+    trailing_stop_trigger: 3.0
+    max_position_pct: 20
+    max_open_positions: 5
+
+  aggressive:
+    stop_loss: 5.0
+    take_profit: 10.0
+    trailing_stop_trigger: 4.0
+    max_position_pct: 25
+    max_open_positions: 6
+
+# Signal engine settings
+signals:
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  volume_multiplier: 1.5  # volume must be 1.5x average
+
+# Telegram notifications
+telegram:
+  enabled: false
+  bot_token: "your-telegram-bot-token"
+  chat_id: "your-chat-id"
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/cryptobot.log"
+
+# Database
+database:
+  path: "data/trades.db"
