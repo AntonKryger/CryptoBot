@@ -133,7 +133,7 @@ class CryptoBot:
                     elif error:
                         logger.info(f"{epic}: Kunne ikke handle - {error}")
                 else:
-                    logger.debug(f"{epic}: HOLD")
+                    logger.info(f"{epic}: HOLD (RSI={details.get('rsi', 0):.1f}, VolumeSpike={details.get('volume_spike', False)})")
 
             except Exception as e:
                 logger.error(f"Fejl ved scanning af {epic}: {e}")

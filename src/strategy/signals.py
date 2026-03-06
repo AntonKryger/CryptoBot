@@ -42,14 +42,21 @@ class SignalEngine:
     def calculate_indicators(self, df):
         """Add all technical indicators to the dataframe."""
         # EMA
-        df[f"ema_{self.ema_fast}"] = ta.ema(df["close"], length=self.ema_fast)
-        df[f"ema_{self.ema_slow}"] = ta.ema(df["close"], length=self.ema_slow)
+        df[f"ema_{self.ema_fast}"] = df["close"].ewm(span=self.ema_fast, adjust=False).mean()
+        df[f"ema_{self.ema_slow}"] = df["close"].ewm(span=self.ema_slow, adjust=False).mean()
 
-        # RSI
-        df["rsi"] = ta.rsi(df["close"], length=self.rsi_period)
+        # RSI (manual calculation for reliability)
+        delta = df["close"].diff()
+        gain = delta.where(delta > 0, 0.0).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        df["rsi"] = 100 - (100 / (1 + rs))
 
-        # VWAP (reset each day)
-        df["vwap"] = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
+        # VWAP (simple: cumulative typical price * volume / cumulative volume)
+        typical_price = (df["high"] + df["low"] + df["close"]) / 3
+        cum_vol = df["volume"].cumsum()
+        cum_tp_vol = (typical_price * df["volume"]).cumsum()
+        df["vwap"] = cum_tp_vol / cum_vol.replace(0, float("nan"))
 
         # Volume moving average
         df["volume_ma"] = df["volume"].rolling(window=20).mean()
