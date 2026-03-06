@@ -1,0 +1,9 @@
+services:
+  cryptobot:
+    build: .
+    container_name: cryptobot
+    restart: always
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
