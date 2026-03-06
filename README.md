@@ -1,47 +1,47 @@
 # CryptoBot
 
 ## Beskrivelse
-Automatiseret crypto trading bot der handler CFD'er via Capital.com's API. Bruger multi-signal momentum strategi med konfigurerbar risikoprofil. Understøtter long og short positioner med 2x leverage.
+Automatiseret crypto trading bot der handler CFD'er via Capital.com's API. Bruger multi-signal momentum strategi med konfigurerbar risikoprofil. Understoetter long og short positioner med 2x leverage.
 
 ## Status
-Aktiv
+Aktiv - koerer live paa demo-konto
 
 ## Sidst arbejdet paa
-**Dato:** 06-03-2026
+**Dato:** 06-03-2026 23:15
 **Hvad blev lavet:**
-- Projekt oprettet
-- Kravspecifikation defineret
-- Capital.com API adgang bekraeftet (demo-konto med €1.000)
+- Projekt oprettet med fuld arkitektur
+- Capital.com API integration (REST, auth med custom API password)
+- Signal engine (EMA 9/21, RSI, Volume, VWAP) - rene pandas beregninger
+- Risk manager med kill switch, trailing stops, position sizing
+- Trade executor med SQLite logging
+- Telegram notifikationer (@claude_cryptobot_bot)
+- Test-handel gennemfoert (1 XRP koeb + luk)
+- Bot startet live paa demo-konto (scanner hvert minut)
 
 **Naeste skridt:**
-- [ ] Opsaet Python-miljoe og dependencies
-- [ ] Byg Capital.com API-forbindelse (session, auth)
-- [ ] Hent prisdata og test WebSocket
-- [ ] Implementer signal engine (EMA, RSI, Volume, VWAP)
-- [ ] Implementer risk manager (stop-loss, take-profit, kill switch)
-- [ ] Implementer order executor
-- [ ] Byg data-analyse modul (til samarbejde i Claude Code)
-- [ ] Opsaet Telegram notifikationer
+- [ ] Deploy til cloud-server (VPS) for 24/7 drift
 - [ ] Backtesting paa historisk data
-- [ ] Deploy til cloud-server (VPS)
+- [ ] Multi-strategi: flere demo-konti med A/B test
+- [ ] Telegram kommandoer (/status, /stop)
+- [ ] Forbedre signal engine baseret paa resultater
+- [ ] Tilfoej flere indikator-kombinationer
 
 ## Tech Stack
-- Python 3.12+
-- Capital.com REST + WebSocket API
-- pandas / pandas-ta (teknisk analyse)
+- Python 3.12
+- Capital.com REST API (demo-server)
+- pandas (teknisk analyse, rene beregninger)
 - SQLite (handelslog)
-- python-telegram-bot (notifikationer)
-- APScheduler (scheduling)
-- Docker (til deployment)
+- Telegram Bot API (notifikationer)
+- GitHub: https://github.com/AntonKryger/CryptoBot (privat)
 
 ## Konfiguration
 Alle indstillinger kan justeres i `config.yaml`:
-- Risikoprofil (konservativ/moderat/aggressiv)
+- Risikoprofil (konservativ/moderat/aggressiv/moderate_aggressive)
 - Stop-loss og take-profit procenter
 - Leverage (standard 2x)
-- Coins der handles
+- Coins der handles (10 coins)
 - Kill switch (max tab-graense)
-- Tidsramme for analyse
+- Tidsramme for analyse (15 min candles)
 
 ## Strategi: Smart Momentum
 Multi-signal tilgang - handler kun naar flere indikatorer er enige:
@@ -49,35 +49,37 @@ Multi-signal tilgang - handler kun naar flere indikatorer er enige:
 | Signal | Koeb | Saelg |
 |--------|------|-------|
 | EMA Crossover (9/21) | EMA9 > EMA21 | EMA9 < EMA21 |
-| RSI | Under 70 | Over 75 eller under 25 (short) |
-| Volume | Over 1.5x gennemsnit | - |
+| RSI | Under 70 | Over 30 (short) |
+| Volume | Over 1.5x gennemsnit | Over 1.5x gennemsnit |
 | VWAP | Pris over VWAP | Pris under VWAP |
 
 ### Risikostyring
-- Stop-loss: Konfigurerbar (standard 3-5%)
-- Take-profit: Konfigurerbar (standard 5-8%)
+- Stop-loss: 4% (moderate_aggressive profil)
+- Take-profit: 7%
 - Trailing stop: Flyt stop-loss til break-even ved +3%
 - Max position: 20% af portfolio per trade
-- Kill switch: Stop al handel ved konfigurerbart max-tab
+- Max aabne positioner: 5
+- Kill switch: Stop handel ved -5% dagligt eller -30% totalt
 
 ## Features
 - [x] Kravspecifikation
-- [ ] Capital.com API integration
-- [ ] Signal engine (EMA, RSI, Volume, VWAP)
-- [ ] Risk manager
-- [ ] Order executor (long + short)
-- [ ] 2x leverage support
+- [x] Capital.com API integration
+- [x] Signal engine (EMA, RSI, Volume, VWAP)
+- [x] Risk manager (stop-loss, take-profit, kill switch)
+- [x] Order executor (long + short)
+- [x] 2x leverage support
+- [x] Telegram notifikationer
+- [x] Konfigurerbar risikoprofil via config.yaml
+- [x] Data-analyse modul (Claude Code samarbejde)
 - [ ] Multi-strategi (flere demo-konti)
-- [ ] Data-analyse modul (Claude Code samarbejde)
-- [ ] Telegram notifikationer
 - [ ] Backtesting
 - [ ] Cloud deployment (VPS)
-- [ ] Konfigurerbar risikoprofil via config.yaml
+- [ ] Telegram kommandoer
 
 ## Installation
 ```bash
 # Klon repository
-git clone <repo-url>
+git clone https://github.com/AntonKryger/CryptoBot.git
 cd CryptoBot
 
 # Opret virtuelt miljoe
@@ -90,7 +92,7 @@ pip install -r requirements.txt
 
 # Kopier config
 cp config.example.yaml config.yaml
-# Rediger config.yaml med dine API-nogler
+# Rediger config.yaml med dine API-noegler
 
 # Koer botten
 python main.py
@@ -100,10 +102,10 @@ python main.py
 - **Capital.com** valgt som exchange (brugerens eksisterende platform)
 - **CFD-handel** - muliggoer short selling og leverage
 - **Python** valgt pga. bedste biblioteker til trading og dataanalyse
+- **Rene pandas beregninger** i stedet for pandas-ta (hurtigere, mere paalideligt)
 - **Multi-signal strategi** - reducerer falske signaler vs. enkelt-indikator
 - **Konfigurerbar risikoprofil** - kan justeres uden kodeaendringer
 - **Intet dashboard** - Capital.com's platform bruges til overblik
 - **Telegram** til notifikationer
-- **Cloud-server** for 24/7 drift
+- **Cloud-server** planlagt for 24/7 drift
 - **Data-analyse modul** - saa bot-data kan gennemgaas i Claude Code sessioner
-- **Docker** til nem deployment paa VPS
