@@ -39,6 +39,7 @@ class CapitalClient:
         body = {
             "identifier": self.email,
             "password": self.password,
+            "encryptedPassword": False,
         }
 
         resp = requests.post(url, json=body, headers=headers)
