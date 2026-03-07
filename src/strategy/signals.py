@@ -6,7 +6,8 @@ logger = logging.getLogger(__name__)
 
 class SignalEngine:
     """Range-trading signal engine that detects swing highs/lows and trades
-    mean-reversion patterns. Buys near support, shorts near resistance."""
+    mean-reversion patterns. Buys near support, shorts near resistance.
+    Includes Reddit sentiment analysis as additional signal layer."""
 
     def __init__(self, config):
         signals_cfg = config.get("signals", {})
@@ -21,6 +22,10 @@ class SignalEngine:
         self.buy_zone_pct = signals_cfg.get("buy_zone_pct", 20)  # bottom 20% of range
         self.sell_zone_pct = signals_cfg.get("sell_zone_pct", 80)  # top 80%+ of range
         self.min_range_pct = signals_cfg.get("min_range_pct", 3.0)  # min range to trade
+
+        # Reddit sentiment
+        from src.strategy.reddit_sentiment import RedditSentiment
+        self.reddit = RedditSentiment(config)
 
     def prepare_dataframe(self, prices_data):
         """Convert Capital.com price data to a pandas DataFrame."""
@@ -180,13 +185,24 @@ class SignalEngine:
                 bounce_score += 1
             return bounce_score
 
-    def get_signal(self, df):
+    def get_signal(self, df, epic=None):
         """
         Range-trading signal: buy at support, short at resistance.
+        Reddit sentiment is used as additional scoring layer.
         Returns: ('BUY'|'SELL'|'HOLD', details_dict)
         """
         if df is None or len(df) < self.range_period + 5:
             return "HOLD", {"reason": "Insufficient data"}
+
+        # Get Reddit sentiment adjustment
+        buy_sentiment_adj = 0
+        sell_sentiment_adj = 0
+        sentiment_data = None
+        if epic:
+            try:
+                buy_sentiment_adj, sell_sentiment_adj, sentiment_data = self.reddit.get_signal_adjustment(epic)
+            except Exception as e:
+                logger.warning(f"Reddit sentiment failed for {epic}: {e}")
 
         df = self.calculate_indicators(df)
         latest = df.iloc[-1]
@@ -206,6 +222,7 @@ class SignalEngine:
             "vwap": latest.get("vwap"),
             "ema_fast": latest[f"ema_{self.ema_fast}"],
             "ema_slow": latest[f"ema_{self.ema_slow}"],
+            "sentiment": sentiment_data,
         }
 
         # ── Check if there's a tradeable range ──
@@ -266,6 +283,12 @@ class SignalEngine:
                 score += 1
                 reasons.append("Volume spike on green candle")
 
+            # 7. Reddit sentiment
+            if buy_sentiment_adj != 0:
+                score += buy_sentiment_adj
+                label = sentiment_data["label"] if sentiment_data else "?"
+                reasons.append(f"Reddit {label} ({buy_sentiment_adj:+d})")
+
             details["buy_score"] = score
             details["buy_reasons"] = reasons
 
@@ -320,6 +343,12 @@ class SignalEngine:
             if latest["volume_spike"] and latest["bearish_candle"]:
                 score += 1
                 reasons.append("Volume spike on red candle")
+
+            # 7. Reddit sentiment
+            if sell_sentiment_adj != 0:
+                score += sell_sentiment_adj
+                label = sentiment_data["label"] if sentiment_data else "?"
+                reasons.append(f"Reddit {label} ({sell_sentiment_adj:+d})")
 
             details["sell_score"] = score
             details["sell_reasons"] = reasons

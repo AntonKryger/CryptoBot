@@ -123,8 +123,8 @@ class CryptoBot:
                     logger.warning(f"Ingen data for {epic}")
                     continue
 
-                # Get signal
-                signal_type, details = self.signals.get_signal(df)
+                # Get signal (with Reddit sentiment)
+                signal_type, details = self.signals.get_signal(df, epic=epic)
 
                 if signal_type in ("BUY", "SELL"):
                     current_price = details["close"]
@@ -152,6 +152,7 @@ class CryptoBot:
         self.notifier.register_command("/sell", self._cmd_sell)
         self.notifier.register_command("/close", self._cmd_close)
         self.notifier.register_command("/scan", self._cmd_scan)
+        self.notifier.register_command("/sentiment", self._cmd_sentiment)
         self.notifier.register_command("/stop", self._cmd_stop)
         self.notifier.register_command("/help", self._cmd_help)
 
@@ -388,7 +389,7 @@ class CryptoBot:
                     msg += f"❓ {epic}: Ingen data\n"
                     continue
 
-                signal_type, details = self.signals.get_signal(df)
+                signal_type, details = self.signals.get_signal(df, epic=epic)
                 range_pos = details.get("range_position", 0)
                 rsi = details.get("rsi", 0)
                 zone = details.get("zone", "?")
@@ -413,12 +414,56 @@ class CryptoBot:
                 else:
                     bar = "░░░░▓"
 
+                # Sentiment indicator
+                sentiment = details.get("sentiment")
+                sent_str = ""
+                if sentiment and sentiment.get("total_posts", 0) > 0:
+                    s = sentiment["score"]
+                    sent_emoji = "🐂" if s >= 55 else "🐻" if s <= 45 else "😐"
+                    sent_str = f" | {sent_emoji}{s:.0f}"
+
                 msg += f"{emoji} <b>{epic}</b> {bar}\n"
-                msg += f"   Pos: {range_pos:.0f}% | RSI: {rsi:.0f} | Range: {range_pct:.1f}%\n"
+                msg += f"   Pos: {range_pos:.0f}% | RSI: {rsi:.0f} | Range: {range_pct:.1f}%{sent_str}\n"
 
                 if signal_type != "HOLD":
                     strength = details.get("signal_strength", 0)
                     msg += f"   → {signal_type} (styrke: {strength})\n"
+
+            except Exception as e:
+                msg += f"❓ {epic}: Fejl ({e})\n"
+
+        return msg
+
+    def _cmd_sentiment(self, args=None):
+        """Handle /sentiment [EPIC] command - show Reddit sentiment."""
+        coins_to_check = [args[0].upper()] if args else self.coins
+
+        msg = "📰 <b>Reddit Sentiment</b>\n\n"
+        for epic in coins_to_check:
+            try:
+                sentiment = self.signals.reddit.get_sentiment(epic)
+                score = sentiment["score"]
+                label = sentiment["label"]
+                posts = sentiment["total_posts"]
+
+                # Sentiment bar
+                filled = int(score / 10)
+                bar = "🟢" * filled + "⚪" * (10 - filled)
+                if score < 40:
+                    bar = "🔴" * (10 - filled) + "⚪" * filled
+
+                emoji = "🐂" if score >= 55 else "🐻" if score <= 45 else "😐"
+
+                msg += f"{emoji} <b>{epic}</b>\n"
+                msg += f"   {bar} {score}/100\n"
+                msg += f"   {label} ({posts} posts)\n"
+
+                # Top mentions
+                if sentiment["top_bullish"]:
+                    msg += f"   🟢 {sentiment['top_bullish'][0][:50]}\n"
+                if sentiment["top_bearish"]:
+                    msg += f"   🔴 {sentiment['top_bearish'][0][:50]}\n"
+                msg += "\n"
 
             except Exception as e:
                 msg += f"❓ {epic}: Fejl ({e})\n"
@@ -437,7 +482,9 @@ class CryptoBot:
             "<b>Info:</b>\n"
             "/status - Balance, positioner og statistik\n"
             "/trades - Seneste 5 handler\n"
-            "/scan - Scan alle coins (vis signaler)\n\n"
+            "/scan - Scan alle coins (vis signaler)\n"
+            "/sentiment - Reddit sentiment (alle coins)\n"
+            "/sentiment BTCUSD - Sentiment for specifik coin\n\n"
             "<b>Handel:</b>\n"
             "/buy EPIC SIZE - Køb (fx /buy SOLUSD 1)\n"
             "/sell EPIC SIZE - Short (fx /sell BTCUSD 0.5)\n"
