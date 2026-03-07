@@ -7,18 +7,24 @@ Automatiseret crypto trading bot der handler CFD'er via Capital.com's API. Bruge
 Aktiv - koerer live paa demo-konto
 
 ## Sidst arbejdet paa
-**Dato:** 07-03-2026 02:30
+**Dato:** 07-03-2026 09:00
 **Hvad blev lavet:**
-- Telegram kommandoer implementeret (/status, /trades, /buy, /sell, /close, /stop, /help)
-- Command listener i baggrundstraad (polling-baseret)
-- SQLite thread-safety fix (ny forbindelse per forespoergsel)
-- Ny Hetzner VPS med SSH-noegle (ed25519) i stedet for password
-- Re-deployed til VPS med Docker
+- Range-trading strategi (mean-reversion) erstatter momentum-strategi
+- Koeber i bunden af range, shorter i toppen - ikke omvendt
+- Ny /scan kommando (viser alle coins med zone-position)
+- /close ALL bug fikset
+- Close position 400-fejl fikset (sender direction+size i DELETE body)
+- Kill switch false-trigger fikset (reset ved genstart)
+- Duplicate position check paa /buy og /sell
+- Manuelle trades faar nu automatisk stop-loss og take-profit
+- Fjernet ubrugt pandas-ta dependency
+- Ny VPS: 91.98.26.70 (gammel 5.78.76.213 nedlagt)
+- Deployed og kører live
 
 **Naeste skridt:**
 - [ ] Backtesting paa historisk data
 - [ ] Multi-strategi: flere demo-konti med A/B test
-- [ ] Forbedre signal engine baseret paa resultater
+- [ ] Evaluere range-trading resultater
 - [ ] Tilfoej flere indikator-kombinationer
 
 ## Tech Stack
@@ -38,22 +44,29 @@ Alle indstillinger kan justeres i `config.yaml`:
 - Kill switch (max tab-graense)
 - Tidsramme for analyse (15 min candles)
 
-## Strategi: Smart Momentum
-Multi-signal tilgang - handler kun naar flere indikatorer er enige:
+## Strategi: Range-Trading (Mean Reversion)
+Koeber i bunden af range, shorter i toppen. Holder sig ude af midten.
 
-| Signal | Koeb | Saelg |
-|--------|------|-------|
-| EMA Crossover (9/21) | EMA9 > EMA21 | EMA9 < EMA21 |
-| RSI | Under 70 | Over 30 (short) |
-| Volume | Over 1.5x gennemsnit | Over 1.5x gennemsnit |
-| VWAP | Pris over VWAP | Pris under VWAP |
+| Zone | Position i range | Handling |
+|------|-----------------|----------|
+| Buy Zone | 0-20% (bund) | KOEB - pris nær support |
+| Neutral | 20-80% (midt) | HOLD - ingen edge |
+| Sell Zone | 80-100% (top) | SHORT - pris nær resistance |
+
+### Signal scoring (minimum 4 af 9 for at handle)
+1. Pris i korrekt zone (bund/top af 24h range)
+2. RSI (oversold/overbought)
+3. Bollinger Band position
+4. Bounce/rejection candle patterns
+5. Support/resistance nærhed
+6. Volume bekræftelse
 
 ### Risikostyring
 - Stop-loss: 4% (moderate_aggressive profil)
 - Take-profit: 7%
 - Trailing stop: Flyt stop-loss til break-even ved +3%
 - Max position: 20% af portfolio per trade
-- Max aabne positioner: 5
+- Ingen cap paa aabne positioner
 - Kill switch: Stop handel ved -5% dagligt eller -30% totalt
 
 ## Features
@@ -67,7 +80,9 @@ Multi-signal tilgang - handler kun naar flere indikatorer er enige:
 - [x] Konfigurerbar risikoprofil via config.yaml
 - [x] Data-analyse modul (Claude Code samarbejde)
 - [x] Cloud deployment (Hetzner VPS, Docker, 24/7)
-- [x] Telegram kommandoer (/status, /trades, /buy, /sell, /close, /stop, /help)
+- [x] Telegram kommandoer (/status, /trades, /scan, /buy, /sell, /close, /stop, /help)
+- [x] Range-trading strategi (mean-reversion)
+- [x] Bugfixes (/close ALL, close position API, kill switch, duplicates)
 - [ ] Multi-strategi (flere demo-konti)
 - [ ] Backtesting
 
