@@ -55,7 +55,7 @@ class RedditSentiment:
     def __init__(self, config):
         reddit_cfg = config.get("reddit", {})
         self.enabled = reddit_cfg.get("enabled", True)
-        self.cache_minutes = reddit_cfg.get("cache_minutes", 15)
+        self.cache_minutes = reddit_cfg.get("cache_minutes", 30)
         self.max_posts = reddit_cfg.get("max_posts", 25)
 
         # Reddit OAuth credentials
@@ -76,7 +76,7 @@ class RedditSentiment:
         self._fng_cache = None  # (timestamp, fng_data)
         self._fng_cache_minutes = 30  # Fear & Greed updates daily, cache 30 min
         self._last_request = 0
-        self._request_delay = 1.5  # seconds between requests
+        self._request_delay = 2.5  # seconds between requests (CoinGecko needs spacing)
 
         if self.reddit_enabled:
             logger.info("Reddit OAuth configured")
