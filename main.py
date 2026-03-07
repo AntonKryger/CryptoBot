@@ -130,6 +130,12 @@ class CryptoBot:
             logger.info(f"Kan ikke åbne flere positioner: {reason}")
             return
 
+        # Check if markets are open
+        markets_open, market_status = self.client.are_crypto_markets_open()
+        if not markets_open:
+            logger.info(f"Crypto markeder er lukket ({market_status}) - springer scan over")
+            return
+
         available = balance.get("available", current_balance)
         logger.info(f"Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
 

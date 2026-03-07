@@ -133,6 +133,12 @@ class CryptoBotAI:
             self.running = False
             return
 
+        # Check if markets are open
+        markets_open, market_status = self.client.are_crypto_markets_open()
+        if not markets_open:
+            logger.info(f"[AI] Crypto markeder er lukket ({market_status}) - springer scan over")
+            return
+
         # Check how many positions are already open
         positions = self.client.get_positions()
         open_positions = positions.get("positions", [])

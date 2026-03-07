@@ -141,6 +141,25 @@ class CapitalClient:
         """Get market details for an instrument."""
         return self._request("GET", f"/api/v1/markets/{epic}")
 
+    def is_market_open(self, epic):
+        """Check if a market is currently tradeable.
+        Returns (is_open, status_string).
+        """
+        try:
+            info = self.get_market_info(epic)
+            status = info.get("snapshot", {}).get("marketStatus", "UNKNOWN")
+            return status == "TRADEABLE", status
+        except Exception as e:
+            logger.warning(f"Could not check market status for {epic}: {e}")
+            return False, f"ERROR: {e}"
+
+    def are_crypto_markets_open(self):
+        """Quick check if crypto markets are open (checks BTC as proxy).
+        All crypto CFDs on Capital.com share the same trading hours.
+        Returns (is_open, status_string).
+        """
+        return self.is_market_open("BTCUSD")
+
     def search_markets(self, search_term, limit=10):
         """Search for markets by name or epic."""
         return self._request("GET", "/api/v1/markets", params={
