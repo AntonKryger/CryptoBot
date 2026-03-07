@@ -138,8 +138,22 @@ class CryptoBotAI:
                 except Exception as e:
                     logger.warning(f"[AI] Sentiment failed for {epic}: {e}")
 
-                # AI analysis
-                signal_type, details = self.ai.analyze(epic, df, sentiment_data)
+                # Run rule-based signal engine first (Bot A's logic)
+                rule_signal_type, rule_details = self.signals.get_signal(df, epic=epic)
+                rule_score = rule_details.get("buy_score") or rule_details.get("sell_score") or 0
+                rule_reasons = rule_details.get("buy_reasons") or rule_details.get("sell_reasons") or rule_details.get("reasons", [])
+                if not rule_reasons and rule_details.get("reason"):
+                    rule_reasons = [rule_details["reason"]]
+
+                rule_signal = {
+                    "signal": rule_signal_type,
+                    "score": rule_score,
+                    "reasons": rule_reasons,
+                }
+                logger.info(f"[AI] {epic}: Rule-based bot says {rule_signal_type} (score={rule_score})")
+
+                # AI analysis with rule-based signal as input
+                signal_type, details = self.ai.analyze(epic, df, sentiment_data, rule_signal=rule_signal)
 
                 if signal_type in ("BUY", "SELL"):
                     current_price = details["close"]
@@ -166,6 +180,7 @@ class CryptoBotAI:
         action = "LONG" if direction == "BUY" else "SHORT"
         confidence = details.get("ai_confidence", "?")
         reasoning = details.get("ai_reasoning", "")[:200]
+        agreement = details.get("bot_agreement")
 
         msg = (
             f"🧠 {emoji} <b>[AI] {action}: {epic}</b>\n"
@@ -176,6 +191,9 @@ class CryptoBotAI:
             f"🤖 <b>AI Analyse (confidence: {confidence}/10):</b>\n"
             f"{reasoning}"
         )
+        if agreement:
+            agree_text = "FULD ENIGHED" if agreement is True else "DELVIS ENIGHED"
+            msg += f"\n\n🤝 <b>Bot samarbejde: {agree_text}</b>"
         self.notifier.send(msg)
 
     def _register_commands(self):
@@ -259,7 +277,13 @@ class CryptoBotAI:
                 except Exception:
                     pass
 
-                signal_type, details = self.ai.analyze(epic, df, sentiment)
+                # Get rule-based signal
+                rule_sig, rule_det = self.signals.get_signal(df, epic=epic)
+                rule_sc = rule_det.get("buy_score") or rule_det.get("sell_score") or 0
+                rule_rs = rule_det.get("buy_reasons") or rule_det.get("sell_reasons") or []
+                rule_data = {"signal": rule_sig, "score": rule_sc, "reasons": rule_rs}
+
+                signal_type, details = self.ai.analyze(epic, df, sentiment, rule_signal=rule_data)
                 confidence = details.get("ai_confidence", "?")
                 reasoning = details.get("ai_reasoning", "")[:60]
 
@@ -270,7 +294,9 @@ class CryptoBotAI:
                 else:
                     emoji = "⚪"
 
-                msg += f"{emoji} <b>{epic}</b> (conf: {confidence}/10)\n"
+                # Show both signals
+                rule_emoji = "🟢" if rule_sig == "BUY" else "🔴" if rule_sig == "SELL" else "⚪"
+                msg += f"{emoji} <b>{epic}</b> (AI: {confidence}/10 | Bot: {rule_emoji}{rule_sig} {rule_sc}p)\n"
                 msg += f"   {reasoning}\n\n"
 
             except Exception as e:
@@ -302,7 +328,13 @@ class CryptoBotAI:
             except Exception:
                 pass
 
-            report = self.ai.generate_report(epic, df, sentiment)
+            # Get rule-based signal for report context
+            rule_sig, rule_det = self.signals.get_signal(df, epic=epic)
+            rule_sc = rule_det.get("buy_score") or rule_det.get("sell_score") or 0
+            rule_rs = rule_det.get("buy_reasons") or rule_det.get("sell_reasons") or []
+            rule_data = {"signal": rule_sig, "score": rule_sc, "reasons": rule_rs}
+
+            report = self.ai.generate_report(epic, df, sentiment, rule_signal=rule_data)
 
             # Split long reports into multiple messages (Telegram limit: 4096 chars)
             if len(report) > 4000:

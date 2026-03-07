@@ -29,6 +29,7 @@ IMPORTANT RULES:
 - If the range is too small (<3%), HOLD - there is no edge in a flat market
 - Consider the news sentiment carefully - bad news can override technical signals
 - Be specific about what you see and why you recommend the action
+- You will also see the RULE-BASED BOT's signal. When both you and the rule-based bot agree, increase your confidence by 1-2 points. When you disagree, explain why in your reasoning.
 
 Respond ONLY with valid JSON in this exact format:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -59,13 +60,15 @@ class AIAnalyst:
             time.sleep(self._request_delay - elapsed)
         self._last_request = time.time()
 
-    def analyze(self, epic, df, sentiment_data=None):
+    def analyze(self, epic, df, sentiment_data=None, rule_signal=None):
         """Analyze market data using Claude and return a trading signal.
 
         Args:
             epic: Trading pair (e.g. "BTCUSD")
             df: DataFrame with calculated indicators
             sentiment_data: Optional dict from CryptoPanic/Reddit sentiment
+            rule_signal: Optional dict with rule-based bot's signal
+                         {"signal": "BUY/SELL/HOLD", "score": int, "reasons": [...], "details": {...}}
 
         Returns:
             (signal, details) tuple - same format as SignalEngine.get_signal()
@@ -74,7 +77,7 @@ class AIAnalyst:
             return "HOLD", {"reason": "Insufficient data for AI analysis"}
 
         latest = df.iloc[-1]
-        prompt = self._build_prompt(epic, df, sentiment_data)
+        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal)
 
         try:
             self._rate_limit()
@@ -115,6 +118,20 @@ class AIAnalyst:
                 "zone": self._get_zone(latest.get("range_position", 50)),
             }
 
+            # Boost confidence when rule-based bot agrees
+            if rule_signal and signal in ("BUY", "SELL") and rule_signal.get("signal") == signal:
+                rule_score = rule_signal.get("score", 0)
+                if rule_score >= 4:  # rule-based bot also triggered
+                    confidence = min(10, confidence + 2)
+                    details["bot_agreement"] = True
+                    logger.info(f"AI {epic}: Both bots agree on {signal}! Confidence boosted to {confidence}")
+                elif rule_score >= 2:  # rule-based bot leaning same way
+                    confidence = min(10, confidence + 1)
+                    details["bot_agreement"] = "partial"
+                    logger.info(f"AI {epic}: Rule-bot leaning {signal} (score={rule_score}), confidence +1 to {confidence}")
+
+            details["ai_confidence"] = confidence  # update after boost
+
             # Only trigger trade if confidence meets minimum
             if signal in ("BUY", "SELL") and confidence < self.min_confidence:
                 details["reason"] = f"AI {signal} but low confidence ({confidence}/{self.min_confidence})"
@@ -148,7 +165,7 @@ class AIAnalyst:
             return "SELL_ZONE"
         return "NEUTRAL"
 
-    def _build_prompt(self, epic, df, sentiment_data=None):
+    def _build_prompt(self, epic, df, sentiment_data=None, rule_signal=None):
         """Build the analysis prompt with all market data."""
         latest = df.iloc[-1]
 
@@ -232,16 +249,29 @@ NEWS SENTIMENT:
         else:
             prompt += "\nNEWS SENTIMENT: No data available"
 
+        # Add rule-based bot's signal for collaboration
+        if rule_signal:
+            rs_signal = rule_signal.get("signal", "HOLD")
+            rs_score = rule_signal.get("score", 0)
+            rs_reasons = rule_signal.get("reasons", [])
+            prompt += f"""
+
+RULE-BASED BOT SIGNAL:
+- Signal: {rs_signal}
+- Score: {rs_score}/9 (needs 4+ to trigger)
+- Reasons: {', '.join(rs_reasons[:5]) if rs_reasons else 'None'}
+- Note: This is the technical scoring system's conclusion. If it agrees with your analysis, you can be more confident. If it disagrees, explain why you see it differently."""
+
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt
 
-    def generate_report(self, epic, df, sentiment_data=None):
+    def generate_report(self, epic, df, sentiment_data=None, rule_signal=None):
         """Generate a detailed analysis report explaining the reasoning step by step."""
         if df is None or len(df) < 50:
             return "Ikke nok data til rapport."
 
         latest = df.iloc[-1]
-        prompt = self._build_prompt(epic, df, sentiment_data)
+        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal)
 
         report_system = """You are an expert crypto trading analyst writing a detailed report in Danish.
 
@@ -272,7 +302,11 @@ Dato: {current date/time}
 - Hvad siger nyhederne?
 - Er markedet bullish eller bearish?
 
-5. KONKLUSION
+5. REGEL-BOT SAMMENLIGNING
+- Hvad siger den regelbaserede bot?
+- Er I enige eller uenige? Hvorfor?
+
+6. KONKLUSION
 - Samlet vurdering
 - Signal: BUY / SELL / HOLD
 - Confidence: X/10
