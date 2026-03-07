@@ -7,7 +7,7 @@ Automatiseret crypto trading bot der handler CFD'er via Capital.com's API. Bruge
 Aktiv - koerer live paa demo-konto
 
 ## Sidst arbejdet paa
-**Dato:** 06-03-2026 23:15
+**Dato:** 07-03-2026 00:10
 **Hvad blev lavet:**
 - Projekt oprettet med fuld arkitektur
 - Capital.com API integration (REST, auth med custom API password)
@@ -16,10 +16,10 @@ Aktiv - koerer live paa demo-konto
 - Trade executor med SQLite logging
 - Telegram notifikationer (@claude_cryptobot_bot)
 - Test-handel gennemfoert (1 XRP koeb + luk)
-- Bot startet live paa demo-konto (scanner hvert minut)
+- Deployed til Hetzner VPS (CX23, Nuremberg) - koerer 24/7
+- Docker setup med auto-restart
 
 **Naeste skridt:**
-- [ ] Deploy til cloud-server (VPS) for 24/7 drift
 - [ ] Backtesting paa historisk data
 - [ ] Multi-strategi: flere demo-konti med A/B test
 - [ ] Telegram kommandoer (/status, /stop)
@@ -71,9 +71,9 @@ Multi-signal tilgang - handler kun naar flere indikatorer er enige:
 - [x] Telegram notifikationer
 - [x] Konfigurerbar risikoprofil via config.yaml
 - [x] Data-analyse modul (Claude Code samarbejde)
+- [x] Cloud deployment (Hetzner VPS, Docker, 24/7)
 - [ ] Multi-strategi (flere demo-konti)
 - [ ] Backtesting
-- [ ] Cloud deployment (VPS)
 - [ ] Telegram kommandoer
 
 ## Installation
