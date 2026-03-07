@@ -134,8 +134,10 @@ class TradeExecutor:
 
         for pos in positions.get("positions", []):
             deal_id = pos["position"]["dealId"]
+            direction = pos["position"]["direction"]
+            size = pos["position"]["size"]
             try:
-                self.client.close_position(deal_id)
+                self.client.close_position(deal_id, direction=direction, size=size)
                 closed += 1
                 logger.info(f"Closed position {deal_id}: {reason}")
             except Exception as e:

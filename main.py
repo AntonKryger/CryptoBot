@@ -134,11 +134,11 @@ class CryptoBot:
                         stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                         take_profit = self.risk.calculate_take_profit(current_price, signal_type)
                         size = self.risk.calculate_position_size(balance["balance"], current_price)
-                        self.notifier.notify_trade(signal_type, epic, size, current_price, stop_loss, take_profit)
+                        self.notifier.notify_trade(signal_type, epic, size, current_price, stop_loss, take_profit, details)
                     elif error:
                         logger.info(f"{epic}: Kunne ikke handle - {error}")
                 else:
-                    logger.info(f"{epic}: HOLD (RSI={details.get('rsi', 0):.1f}, VolumeSpike={details.get('volume_spike', False)})")
+                    logger.info(f"{epic}: HOLD ({details.get('reason', 'RSI=' + str(round(details.get('rsi', 0), 1)))})")
 
             except Exception as e:
                 logger.error(f"Fejl ved scanning af {epic}: {e}")
@@ -151,6 +151,7 @@ class CryptoBot:
         self.notifier.register_command("/buy", self._cmd_buy)
         self.notifier.register_command("/sell", self._cmd_sell)
         self.notifier.register_command("/close", self._cmd_close)
+        self.notifier.register_command("/scan", self._cmd_scan)
         self.notifier.register_command("/stop", self._cmd_stop)
         self.notifier.register_command("/help", self._cmd_help)
 
@@ -223,26 +224,42 @@ class CryptoBot:
         except ValueError:
             return f"Ugyldig størrelse: {args[1]}"
 
+        # Check for duplicate position
+        positions = self.client.get_positions()
+        for pos in positions.get("positions", []):
+            if pos["market"]["epic"] == epic:
+                return f"⚠️ Du har allerede en åben position i {epic}.\nBrug /close {epic} først."
+
         try:
-            result = self.client.create_position(epic=epic, direction="BUY", size=size)
+            # Get current price for stop-loss/take-profit
+            prices = self.client.get_prices(epic, resolution="MINUTE_15", max_count=5)
+            candles = prices.get("prices", [])
+            if candles:
+                last = candles[-1]
+                current_price = (last["closePrice"]["bid"] + last["closePrice"]["ask"]) / 2
+            else:
+                current_price = None
+
+            stop_loss = self.risk.calculate_stop_loss(current_price, "BUY") if current_price else None
+            take_profit = self.risk.calculate_take_profit(current_price, "BUY") if current_price else None
+
+            result = self.client.create_position(
+                epic=epic, direction="BUY", size=size,
+                stop_loss=stop_loss, take_profit=take_profit
+            )
             deal_ref = result.get("dealReference", "ukendt")
 
-            # Get current price for notification
-            balance = self.client.get_account_balance()
-            positions = self.client.get_positions()
-            current_price = None
-            for pos in positions.get("positions", []):
-                if pos["market"]["epic"] == epic:
-                    current_price = pos["position"]["level"]
-                    break
-
-            price_str = f" @ €{current_price:.2f}" if current_price else ""
-            logger.info(f"Manual BUY via Telegram: {epic} x{size}{price_str}")
+            price_str = f"€{current_price:.2f}" if current_price else "afventer"
+            sl_str = f"€{stop_loss:.2f}" if stop_loss else "N/A"
+            tp_str = f"€{take_profit:.2f}" if take_profit else "N/A"
+            logger.info(f"Manual BUY via Telegram: {epic} x{size} @ {price_str}")
 
             return (
                 f"🟢 <b>KØBT: {epic}</b>\n"
                 f"Størrelse: {size}\n"
-                f"Pris: {price_str or 'afventer'}\n"
+                f"Pris: {price_str}\n"
+                f"Stop-loss: {sl_str}\n"
+                f"Take-profit: {tp_str}\n"
                 f"Deal: {deal_ref}"
             )
         except Exception as e:
@@ -259,79 +276,154 @@ class CryptoBot:
         except ValueError:
             return f"Ugyldig størrelse: {args[1]}"
 
+        # Check for duplicate position
+        positions = self.client.get_positions()
+        for pos in positions.get("positions", []):
+            if pos["market"]["epic"] == epic:
+                return f"⚠️ Du har allerede en åben position i {epic}.\nBrug /close {epic} først."
+
         try:
-            result = self.client.create_position(epic=epic, direction="SELL", size=size)
+            # Get current price for stop-loss/take-profit
+            prices = self.client.get_prices(epic, resolution="MINUTE_15", max_count=5)
+            candles = prices.get("prices", [])
+            if candles:
+                last = candles[-1]
+                current_price = (last["closePrice"]["bid"] + last["closePrice"]["ask"]) / 2
+            else:
+                current_price = None
+
+            stop_loss = self.risk.calculate_stop_loss(current_price, "SELL") if current_price else None
+            take_profit = self.risk.calculate_take_profit(current_price, "SELL") if current_price else None
+
+            result = self.client.create_position(
+                epic=epic, direction="SELL", size=size,
+                stop_loss=stop_loss, take_profit=take_profit
+            )
             deal_ref = result.get("dealReference", "ukendt")
 
-            positions = self.client.get_positions()
-            current_price = None
-            for pos in positions.get("positions", []):
-                if pos["market"]["epic"] == epic:
-                    current_price = pos["position"]["level"]
-                    break
-
-            price_str = f" @ €{current_price:.2f}" if current_price else ""
-            logger.info(f"Manual SELL via Telegram: {epic} x{size}{price_str}")
+            price_str = f"€{current_price:.2f}" if current_price else "afventer"
+            sl_str = f"€{stop_loss:.2f}" if stop_loss else "N/A"
+            tp_str = f"€{take_profit:.2f}" if take_profit else "N/A"
+            logger.info(f"Manual SELL via Telegram: {epic} x{size} @ {price_str}")
 
             return (
                 f"🔴 <b>SHORTET: {epic}</b>\n"
                 f"Størrelse: {size}\n"
-                f"Pris: {price_str or 'afventer'}\n"
+                f"Pris: {price_str}\n"
+                f"Stop-loss: {sl_str}\n"
+                f"Take-profit: {tp_str}\n"
                 f"Deal: {deal_ref}"
             )
         except Exception as e:
             return f"Fejl ved salg: {e}"
 
     def _cmd_close(self, args=None):
-        """Handle /close [EPIC] command. Close specific or all positions."""
+        """Handle /close [EPIC|ALL] command. Close specific or all positions."""
         positions = self.client.get_positions()
         open_pos = positions.get("positions", [])
 
         if not open_pos:
             return "Ingen åbne positioner at lukke."
 
-        # If an epic is specified, close only that one
-        if args:
-            epic_filter = args[0].upper()
-            targets = [p for p in open_pos if p["market"]["epic"] == epic_filter]
-            if not targets:
-                return f"Ingen åben position i {epic_filter}."
-        else:
-            # Show positions and ask to specify
+        # No args - show menu
+        if not args:
             msg = "Hvilken position vil du lukke?\n\n"
             for pos in open_pos:
                 epic = pos["market"]["epic"]
                 direction = pos["position"]["direction"]
                 size = pos["position"]["size"]
-                msg += f"  /close {epic}\n"
+                emoji = "🟢" if direction == "BUY" else "🔴"
+                msg += f"  {emoji} /close {epic} ({direction} x{size})\n"
             msg += "\n  /close ALL - Luk alle"
             return msg
 
         # Close ALL
-        if args and args[0].upper() == "ALL":
+        if args[0].upper() == "ALL":
             closed = 0
+            errors = []
             for pos in open_pos:
                 try:
                     deal_id = pos["position"]["dealId"]
-                    self.client.close_position(deal_id)
+                    direction = pos["position"]["direction"]
+                    size = pos["position"]["size"]
+                    self.client.close_position(deal_id, direction=direction, size=size)
                     closed += 1
                 except Exception as e:
+                    errors.append(f"{pos['market']['epic']}: {e}")
                     logger.error(f"Failed to close {pos['market']['epic']}: {e}")
-            return f"✅ <b>{closed} positioner lukket</b>"
+            msg = f"✅ <b>{closed} positioner lukket</b>"
+            if errors:
+                msg += f"\n\n⚠️ Fejl:\n" + "\n".join(errors)
+            return msg
 
-        # Close specific
+        # Close specific epic
+        epic_filter = args[0].upper()
+        targets = [p for p in open_pos if p["market"]["epic"] == epic_filter]
+        if not targets:
+            return f"Ingen åben position i {epic_filter}."
+
         closed_epics = []
         for pos in targets:
             try:
                 deal_id = pos["position"]["dealId"]
+                direction = pos["position"]["direction"]
+                size = pos["position"]["size"]
                 epic = pos["market"]["epic"]
-                self.client.close_position(deal_id)
+                self.client.close_position(deal_id, direction=direction, size=size)
                 closed_epics.append(epic)
                 logger.info(f"Manual close via Telegram: {epic}")
             except Exception as e:
                 return f"Fejl ved lukning af {epic}: {e}"
 
         return f"✅ <b>LUKKET: {', '.join(closed_epics)}</b>"
+
+    def _cmd_scan(self, args=None):
+        """Handle /scan command - show signal analysis for all coins."""
+        msg = "🔍 <b>Market Scan</b>\n\n"
+        for epic in self.coins:
+            try:
+                prices = self.client.get_prices(epic, resolution=self.timeframe)
+                df = self.signals.prepare_dataframe(prices)
+                if df is None:
+                    msg += f"❓ {epic}: Ingen data\n"
+                    continue
+
+                signal_type, details = self.signals.get_signal(df)
+                range_pos = details.get("range_position", 0)
+                rsi = details.get("rsi", 0)
+                zone = details.get("zone", "?")
+                range_pct = details.get("range_pct", 0)
+
+                if signal_type == "BUY":
+                    emoji = "🟢"
+                elif signal_type == "SELL":
+                    emoji = "🔴"
+                else:
+                    emoji = "⚪"
+
+                # Zone indicator bar
+                if range_pos <= 20:
+                    bar = "▓░░░░"
+                elif range_pos <= 40:
+                    bar = "░▓░░░"
+                elif range_pos <= 60:
+                    bar = "░░▓░░"
+                elif range_pos <= 80:
+                    bar = "░░░▓░"
+                else:
+                    bar = "░░░░▓"
+
+                msg += f"{emoji} <b>{epic}</b> {bar}\n"
+                msg += f"   Pos: {range_pos:.0f}% | RSI: {rsi:.0f} | Range: {range_pct:.1f}%\n"
+
+                if signal_type != "HOLD":
+                    strength = details.get("signal_strength", 0)
+                    msg += f"   → {signal_type} (styrke: {strength})\n"
+
+            except Exception as e:
+                msg += f"❓ {epic}: Fejl ({e})\n"
+
+        return msg
 
     def _cmd_stop(self, args=None):
         """Handle /stop command."""
@@ -344,7 +436,8 @@ class CryptoBot:
             "🤖 <b>CryptoBot Kommandoer</b>\n\n"
             "<b>Info:</b>\n"
             "/status - Balance, positioner og statistik\n"
-            "/trades - Seneste 5 handler\n\n"
+            "/trades - Seneste 5 handler\n"
+            "/scan - Scan alle coins (vis signaler)\n\n"
             "<b>Handel:</b>\n"
             "/buy EPIC SIZE - Køb (fx /buy SOLUSD 1)\n"
             "/sell EPIC SIZE - Short (fx /sell BTCUSD 0.5)\n"

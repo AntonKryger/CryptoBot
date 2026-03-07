@@ -24,10 +24,14 @@ class RiskManager:
         self.daily_reset_date = None
 
     def initialize(self, balance):
-        """Set initial balance for kill switch tracking."""
+        """Set initial balance for kill switch tracking.
+        Always uses current balance as baseline - prevents false kill switch
+        triggers after bot restart with different balance.
+        """
         self.initial_balance = balance
         self.daily_start_balance = balance
         self.daily_reset_date = datetime.now().date()
+        self.kill_switch_active = False
         logger.info(f"Risk manager initialized. Balance: €{balance:.2f}")
 
     def check_kill_switch(self, current_balance):

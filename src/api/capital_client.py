@@ -153,9 +153,19 @@ class CapitalClient:
         logger.info(f"Opening {direction} position: {epic} x{size}")
         return self._request("POST", "/api/v1/positions", json=body)
 
-    def close_position(self, deal_id):
-        """Close an open position by deal ID."""
+    def close_position(self, deal_id, direction=None, size=None):
+        """Close an open position by deal ID.
+        Capital.com requires the opposite direction and size in the DELETE body.
+        """
         logger.info(f"Closing position: {deal_id}")
+        # Capital.com API requires direction (opposite) and size to close
+        if direction and size:
+            close_direction = "SELL" if direction == "BUY" else "BUY"
+            body = {
+                "direction": close_direction,
+                "size": size,
+            }
+            return self._request("DELETE", f"/api/v1/positions/{deal_id}", json=body)
         return self._request("DELETE", f"/api/v1/positions/{deal_id}")
 
     def update_position(self, deal_id, stop_loss=None, take_profit=None):

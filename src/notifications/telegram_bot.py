@@ -111,17 +111,27 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
 
-    def notify_trade(self, direction, epic, size, price, stop_loss, take_profit):
-        """Send a trade notification."""
+    def notify_trade(self, direction, epic, size, price, stop_loss, take_profit, details=None):
+        """Send a trade notification with signal details."""
         emoji = "🟢" if direction == "BUY" else "🔴"
         action = "LONG" if direction == "BUY" else "SHORT"
         msg = (
             f"{emoji} <b>{action}: {epic}</b>\n"
+            f"Pris: €{price:.4f}\n"
             f"Størrelse: {size}\n"
-            f"Pris: €{price:.2f}\n"
-            f"Stop-loss: €{stop_loss:.2f}\n"
-            f"Take-profit: €{take_profit:.2f}"
+            f"Stop-loss: €{stop_loss:.4f}\n"
+            f"Take-profit: €{take_profit:.4f}"
         )
+        if details:
+            range_pos = details.get("range_position", 0)
+            zone = details.get("zone", "?")
+            strength = details.get("signal_strength", 0)
+            reasons = details.get("reasons", [])
+            msg += f"\n\n📊 <b>Signal:</b>\n"
+            msg += f"  Zone: {zone} ({range_pos:.0f}%)\n"
+            msg += f"  Styrke: {strength}/9\n"
+            if reasons:
+                msg += f"  Grunde: {', '.join(reasons[:3])}"
         self.send(msg)
 
     def notify_close(self, epic, profit_loss):
