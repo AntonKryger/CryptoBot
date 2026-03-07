@@ -1,5 +1,6 @@
 # Config with secrets
 config.yaml
+config_ai.yaml
 
 # Python
 __pycache__/
@@ -20,7 +21,9 @@ build/
 
 # Logs and data
 logs/*.log
+logs_ai/*.log
 data/*.db
+data_ai/*.db
 
 # OS
 .DS_Store

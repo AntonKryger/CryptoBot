@@ -3,3 +3,4 @@ websocket-client>=1.7.0
 pandas>=2.2.0
 pyyaml>=6.0.1
 apscheduler>=3.10.4
+anthropic>=0.42.0

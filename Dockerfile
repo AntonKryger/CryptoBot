@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
 COPY main.py .
+COPY main_ai.py .
 
 RUN mkdir -p logs data
 

@@ -21,6 +21,7 @@ class CapitalClient:
         self.api_key = config["capital"]["api_key"]
         self.demo = config["capital"].get("demo", True)
         self.base_url = DEMO_URL if self.demo else LIVE_URL
+        self.account_name = config["capital"].get("account_name", None)
 
         self.cst = None
         self.security_token = None
@@ -49,6 +50,11 @@ class CapitalClient:
         self.security_token = resp.headers.get("X-SECURITY-TOKEN")
         self.session_active = True
         logger.info("Capital.com session started successfully")
+
+        # Switch to specific account if configured
+        if self.account_name:
+            self._switch_account(self.account_name)
+
         return True
 
     def _ensure_session(self):
@@ -89,6 +95,20 @@ class CapitalClient:
 
         resp.raise_for_status()
         return resp.json() if resp.content else None
+
+    def _switch_account(self, account_name):
+        """Switch to a specific account by name."""
+        try:
+            data = self._request("GET", "/api/v1/accounts")
+            for account in data.get("accounts", []):
+                if account.get("accountName", "").lower() == account_name.lower():
+                    account_id = account["accountId"]
+                    self._request("PUT", "/api/v1/session", json={"accountId": account_id})
+                    logger.info(f"Switched to account: {account_name} (ID: {account_id})")
+                    return
+            logger.warning(f"Account '{account_name}' not found, using default")
+        except Exception as e:
+            logger.error(f"Failed to switch account: {e}")
 
     # ── Account info ────────────────────────────────────────────────
 
