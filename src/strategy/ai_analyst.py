@@ -205,14 +205,22 @@ RECENT CANDLES (15min each, newest last):
 {candles_text}"""
 
         # Add sentiment if available
-        if sentiment_data and sentiment_data.get("total_posts", 0) > 0:
+        has_sentiment = sentiment_data and (
+            sentiment_data.get("total_posts", 0) > 0 or sentiment_data.get("fear_greed")
+        )
+        if has_sentiment:
             prompt += f"""
 NEWS SENTIMENT:
-- Score: {sentiment_data['score']}/100 ({sentiment_data['label']})
-- Posts analyzed: {sentiment_data['total_posts']}
+- Sentiment score: {sentiment_data['score']}/100 ({sentiment_data['label']})
 - Bullish weight: {sentiment_data['bullish_weight']}
 - Bearish weight: {sentiment_data['bearish_weight']}"""
 
+            fng = sentiment_data.get("fear_greed")
+            if fng:
+                prompt += f"\n- Fear & Greed Index: {fng['value']}/100 ({fng['label']})"
+
+            if sentiment_data.get("total_posts", 0) > 0:
+                prompt += f"\n- News posts analyzed: {sentiment_data['total_posts']}"
             if sentiment_data.get("top_bullish"):
                 prompt += f"\n- Top bullish headline: {sentiment_data['top_bullish'][0][:80]}"
             if sentiment_data.get("top_bearish"):
