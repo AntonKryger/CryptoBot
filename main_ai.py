@@ -113,21 +113,50 @@ class CryptoBotAI:
                 time.sleep(10)
 
     def _scan_cycle(self):
-        """Scan all coins using AI analysis."""
+        """Scan all coins using AI analysis. Two-pass system:
+        Pass 1: Analyze all coins, collect signals
+        Pass 2: Allocate capital by confidence, execute trades
+        """
         logger.info(f"[AI] Scanner {len(self.coins)} coins...")
 
         # Check kill switch
         balance = self.client.get_account_balance()
-        if balance:
-            killed, reason = self.risk.check_kill_switch(balance["balance"])
-            if killed:
-                self.notifier.send(f"🚨 <b>[AI] KILL SWITCH</b>\n{reason}")
-                self.executor.close_all_positions(reason)
-                self.running = False
-                return
+        if not balance:
+            logger.error("[AI] Kunne ikke hente balance")
+            return
+
+        current_balance = balance["balance"]
+        killed, reason = self.risk.check_kill_switch(current_balance)
+        if killed:
+            self.notifier.send(f"🚨 <b>[AI] KILL SWITCH</b>\n{reason}")
+            self.executor.close_all_positions(reason)
+            self.running = False
+            return
+
+        # Check how many positions are already open
+        positions = self.client.get_positions()
+        open_positions = positions.get("positions", [])
+        open_epics = {p["market"]["epic"] for p in open_positions}
+
+        can_trade, reason = self.risk.can_open_position(len(open_positions), current_balance, current_balance)
+        if not can_trade:
+            logger.info(f"[AI] Kan ikke åbne flere positioner: {reason}")
+            return
+
+        # Calculate available margin (total - used)
+        available = balance.get("available", current_balance)
+        logger.info(f"[AI] Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
+
+        # ── PASS 1: Analyze all coins, collect trade signals ──
+        trade_signals = []
 
         for epic in self.coins:
             try:
+                # Skip if already have position
+                if epic in open_epics:
+                    logger.info(f"[AI] {epic}: Allerede åben position, springer over")
+                    continue
+
                 # Get price data
                 prices = self.client.get_prices(epic, resolution=self.timeframe)
                 df = self.signals.prepare_dataframe(prices)
@@ -136,10 +165,10 @@ class CryptoBotAI:
                     logger.warning(f"[AI] Ingen data for {epic}")
                     continue
 
-                # Calculate indicators (reuse existing logic)
+                # Calculate indicators
                 df = self.signals.calculate_indicators(df)
 
-                # Feed ATR to watchdog for dynamic trailing stops
+                # Feed ATR to watchdog
                 latest_atr = df.iloc[-1].get("atr_pct", 2.0)
                 self.watchdog.update_atr(epic, latest_atr)
 
@@ -150,7 +179,7 @@ class CryptoBotAI:
                 except Exception as e:
                     logger.warning(f"[AI] Sentiment failed for {epic}: {e}")
 
-                # Run rule-based signal engine first (Bot A's logic)
+                # Run rule-based signal engine first
                 rule_signal_type, rule_details = self.signals.get_signal(df, epic=epic)
                 rule_score = rule_details.get("buy_score") or rule_details.get("sell_score") or 0
                 rule_reasons = rule_details.get("buy_reasons") or rule_details.get("sell_reasons") or rule_details.get("reasons", [])
@@ -164,20 +193,13 @@ class CryptoBotAI:
                 }
                 logger.info(f"[AI] {epic}: Rule-based bot says {rule_signal_type} (score={rule_score})")
 
-                # AI analysis with rule-based signal as input
+                # AI analysis
                 signal_type, details = self.ai.analyze(epic, df, sentiment_data, rule_signal=rule_signal)
 
                 if signal_type in ("BUY", "SELL"):
-                    current_price = details["close"]
-                    result, error = self.executor.execute_trade(epic, signal_type, details, current_price)
-
-                    if result:
-                        size = self.risk.calculate_position_size(balance["balance"], current_price)
-                        stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-                        take_profit = self.risk.calculate_take_profit(current_price, signal_type)
-                        self._notify_ai_trade(signal_type, epic, size, current_price, stop_loss, take_profit, details)
-                    elif error and "Cooldown" not in error:
-                        logger.info(f"[AI] {epic}: Kunne ikke handle - {error}")
+                    confidence = details.get("ai_confidence", 5)
+                    trade_signals.append((epic, signal_type, confidence, details))
+                    logger.info(f"[AI] {epic}: {signal_type} (confidence: {confidence}) -> til allokering")
                 else:
                     reason = details.get("reason", "")
                     conf = details.get("ai_confidence", "?")
@@ -186,18 +208,63 @@ class CryptoBotAI:
             except Exception as e:
                 logger.error(f"[AI] Fejl ved scanning af {epic}: {e}")
 
-    def _notify_ai_trade(self, direction, epic, size, price, stop_loss, take_profit, details):
+        # ── PASS 2: Allocate capital and execute trades ──
+        if not trade_signals:
+            logger.info("[AI] Ingen trade-signaler denne runde")
+            return
+
+        logger.info(f"[AI] {len(trade_signals)} signaler fundet, allokerer kapital...")
+        allocations = self.risk.allocate_capital(trade_signals, available)
+
+        for epic, signal_type, allocated_amount, details in allocations:
+            try:
+                current_price = details["close"]
+                size = self.risk.calculate_position_size(allocated_amount, current_price)
+                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+                take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+
+                cat = self.risk.get_coin_category(epic)
+                logger.info(
+                    f"[AI] Executing {signal_type} {epic} ({cat}): "
+                    f"size={size}, alloc=EUR {allocated_amount:.0f}"
+                )
+
+                result = self.client.create_position(
+                    epic=epic,
+                    direction=signal_type,
+                    size=size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+
+                if result:
+                    # Log to database
+                    self.executor._log_trade(epic, signal_type, size, current_price,
+                                             stop_loss, take_profit, result, details)
+                    self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                    self._notify_ai_trade(signal_type, epic, size, current_price,
+                                          stop_loss, take_profit, details, allocated_amount)
+
+            except Exception as e:
+                logger.error(f"[AI] Trade execution failed for {epic}: {e}")
+
+    def _notify_ai_trade(self, direction, epic, size, price, stop_loss, take_profit, details, allocated_amount=None):
         """Send AI trade notification with reasoning."""
         emoji = "🟢" if direction == "BUY" else "🔴"
         action = "LONG" if direction == "BUY" else "SHORT"
         confidence = details.get("ai_confidence", "?")
         reasoning = details.get("ai_reasoning", "")[:200]
         agreement = details.get("bot_agreement")
+        cat = self.risk.get_coin_category(epic)
 
         msg = (
-            f"🧠 {emoji} <b>[AI] {action}: {epic}</b>\n"
+            f"🧠 {emoji} <b>[AI] {action}: {epic}</b> ({cat})\n"
             f"Pris: EUR {price:.4f}\n"
             f"Stoerrelse: {size}\n"
+        )
+        if allocated_amount:
+            msg += f"Allokeret: EUR {allocated_amount:.0f}\n"
+        msg += (
             f"Stop-loss: EUR {stop_loss:.4f}\n"
             f"Take-profit: EUR {take_profit:.4f}\n\n"
             f"🤖 <b>AI Analyse (confidence: {confidence}/10):</b>\n"

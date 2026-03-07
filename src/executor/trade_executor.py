@@ -127,6 +127,29 @@ class TradeExecutor:
             self._recently_traded[epic] = datetime.now()
             return None, str(e)
 
+    def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details):
+        """Log a trade to the database."""
+        deal_id = result.get("dealReference", "unknown")
+        db = self._get_db()
+        db.execute("""
+            INSERT INTO trades (timestamp, epic, direction, size, entry_price,
+                                stop_loss, take_profit, deal_id, status, signal_details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+        """, (
+            datetime.now().isoformat(),
+            epic,
+            signal,
+            size,
+            price,
+            stop_loss,
+            take_profit,
+            deal_id,
+            str(details),
+        ))
+        db.commit()
+        db.close()
+        logger.info(f"Trade logged: {signal} {epic} x{size} @ {price}")
+
     def check_trailing_stops(self):
         """Check and update trailing stops for open positions."""
         positions = self.client.get_positions()

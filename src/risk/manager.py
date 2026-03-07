@@ -3,6 +3,12 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# Coin categories for position sizing
+MEMECOINS = {"DOGEUSD", "SHIBAUSD", "PEPEUSD", "FLOKIUSD"}
+MAJORS = {"BTCUSD", "ETHUSD"}
+
+# Everything else is an altcoin
+
 
 class RiskManager:
     """Manages position sizing, stop-loss, take-profit, and kill switch."""
@@ -12,11 +18,18 @@ class RiskManager:
         self.stop_loss_pct = risk_cfg.get("stop_loss", 4.0)
         self.take_profit_pct = risk_cfg.get("take_profit", 7.0)
         self.trailing_stop_trigger = risk_cfg.get("trailing_stop_trigger", 3.0)
-        self.max_position_pct = risk_cfg.get("max_position_pct", 20)
         self.max_open_positions = risk_cfg.get("max_open_positions", 5)
         self.daily_loss_limit = risk_cfg.get("daily_loss_limit", 5.0)
         self.total_loss_limit = risk_cfg.get("total_loss_limit", 30.0)
         self.leverage = config.get("trading", {}).get("leverage", 2)
+
+        # Capital allocation limits (% of total balance)
+        alloc_cfg = risk_cfg.get("allocation", {})
+        self.max_total_exposure_pct = alloc_cfg.get("max_total_exposure", 80)
+        self.max_memecoin_pct = alloc_cfg.get("max_memecoin", 5)
+        self.max_major_pct = alloc_cfg.get("max_major", 25)
+        self.max_altcoin_pct = alloc_cfg.get("max_altcoin", 15)
+        self.min_position_pct = alloc_cfg.get("min_position", 3)
 
         self.daily_start_balance = None
         self.initial_balance = None
@@ -24,10 +37,7 @@ class RiskManager:
         self.daily_reset_date = None
 
     def initialize(self, balance):
-        """Set initial balance for kill switch tracking.
-        Always uses current balance as baseline - prevents false kill switch
-        triggers after bot restart with different balance.
-        """
+        """Set initial balance for kill switch tracking."""
         self.initial_balance = balance
         self.daily_start_balance = balance
         self.daily_reset_date = datetime.now().date()
@@ -59,11 +69,83 @@ class RiskManager:
 
         return False, None
 
-    def calculate_position_size(self, balance, price):
-        """Calculate position size based on max position percentage and leverage."""
-        max_amount = balance * (self.max_position_pct / 100)
-        # With leverage, we can control a larger position
-        effective_amount = max_amount * self.leverage
+    def get_coin_category(self, epic):
+        """Get the category of a coin for allocation purposes."""
+        if epic in MEMECOINS:
+            return "memecoin"
+        elif epic in MAJORS:
+            return "major"
+        return "altcoin"
+
+    def get_max_allocation_pct(self, epic):
+        """Get max allocation percentage for a coin based on its category."""
+        cat = self.get_coin_category(epic)
+        if cat == "memecoin":
+            return self.max_memecoin_pct
+        elif cat == "major":
+            return self.max_major_pct
+        return self.max_altcoin_pct
+
+    def allocate_capital(self, signals, available_balance):
+        """Allocate capital across multiple signals weighted by confidence.
+
+        Args:
+            signals: list of (epic, signal, confidence, details) tuples
+            available_balance: EUR available for new positions
+
+        Returns:
+            list of (epic, signal, allocated_amount, details) tuples
+        """
+        if not signals:
+            return []
+
+        max_total = available_balance * (self.max_total_exposure_pct / 100)
+        remaining = max_total
+
+        # Sort by confidence (highest first)
+        signals = sorted(signals, key=lambda s: s[2], reverse=True)
+
+        # Calculate total confidence weight
+        total_weight = sum(s[2] for s in signals)
+        if total_weight == 0:
+            return []
+
+        allocations = []
+        for epic, signal, confidence, details in signals:
+            if remaining <= 0:
+                break
+
+            # Max for this coin's category
+            max_for_coin = available_balance * (self.get_max_allocation_pct(epic) / 100)
+            # Min position size
+            min_amount = available_balance * (self.min_position_pct / 100)
+
+            # Confidence-weighted share of remaining capital
+            weight_share = confidence / total_weight
+            ideal_amount = max_total * weight_share
+
+            # Clamp to category max
+            amount = min(ideal_amount, max_for_coin, remaining)
+
+            # Skip if too small
+            if amount < min_amount:
+                logger.info(f"Allocation {epic}: skipped (€{amount:.0f} < min €{min_amount:.0f})")
+                continue
+
+            remaining -= amount
+            allocations.append((epic, signal, amount, details))
+
+            cat = self.get_coin_category(epic)
+            logger.info(
+                f"Allocation {epic} ({cat}): €{amount:.0f} "
+                f"(conf={confidence}, max={self.get_max_allocation_pct(epic)}%)"
+            )
+
+        return allocations
+
+    def calculate_position_size(self, allocated_amount, price):
+        """Calculate position size from allocated EUR amount."""
+        effective_amount = allocated_amount * self.leverage
         size = effective_amount / price
         return round(size, 4)
 
@@ -110,6 +192,5 @@ class RiskManager:
         self.stop_loss_pct = risk_cfg.get("stop_loss", self.stop_loss_pct)
         self.take_profit_pct = risk_cfg.get("take_profit", self.take_profit_pct)
         self.trailing_stop_trigger = risk_cfg.get("trailing_stop_trigger", self.trailing_stop_trigger)
-        self.max_position_pct = risk_cfg.get("max_position_pct", self.max_position_pct)
         self.max_open_positions = risk_cfg.get("max_open_positions", self.max_open_positions)
         logger.info(f"Risk parameters updated: SL={self.stop_loss_pct}%, TP={self.take_profit_pct}%")
