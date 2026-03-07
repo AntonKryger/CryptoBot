@@ -15,6 +15,7 @@ from src.strategy.signals import SignalEngine
 from src.strategy.ai_analyst import AIAnalyst
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
+from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
 
@@ -42,6 +43,7 @@ class CryptoBotAI:
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
+        self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.reporter = Reporter(self.config)
 
         self.coins = self.config.get("trading", {}).get("coins", [])
@@ -79,12 +81,18 @@ class CryptoBotAI:
             f"AI Model: {self.ai.model}\n"
             f"Min confidence: {self.ai.min_confidence}/10\n"
             f"Coins: {len(self.coins)}\n\n"
+            f"Watchdog: hver {self.watchdog.check_interval}s\n"
+            f"Trailing: {self.watchdog.trailing_atr_mult}x ATR\n"
+            f"Delvis profit: {self.watchdog.partial_profit_pct}% -> luk {self.watchdog.partial_close_ratio*100:.0f}%\n\n"
             f"Kommandoer: /ai_status /ai_trades /ai_stop /ai_help"
         )
 
         # Register Telegram commands
         self._register_commands()
         self.notifier.start_command_listener()
+
+        # Start position watchdog (fast monitoring every 10-15 sec)
+        self.watchdog.start()
 
         self.running = True
         self._run_loop()
@@ -130,6 +138,10 @@ class CryptoBotAI:
 
                 # Calculate indicators (reuse existing logic)
                 df = self.signals.calculate_indicators(df)
+
+                # Feed ATR to watchdog for dynamic trailing stops
+                latest_atr = df.iloc[-1].get("atr_pct", 2.0)
+                self.watchdog.update_atr(epic, latest_atr)
 
                 # Get sentiment data
                 sentiment_data = None
@@ -242,7 +254,12 @@ class CryptoBotAI:
 
         msg += f"\n<b>Statistik:</b>\n"
         msg += f"  Handler: {stats['total_trades']} | Win: {stats['win_rate']}%\n"
-        msg += f"  Total P/L: EUR {stats['total_pl']:+.2f}"
+        msg += f"  Total P/L: EUR {stats['total_pl']:+.2f}\n"
+
+        wd = self.watchdog.get_status()
+        msg += f"\n<b>Watchdog:</b> {'Aktiv' if wd['running'] else 'Stoppet'}\n"
+        msg += f"  Interval: {wd['interval']}s | Tracked: {wd['tracked_positions']}\n"
+        msg += f"  Break-even sat: {wd['breakeven_set']} | Delvis profit: {wd['partial_taken']}"
         return msg
 
     def _cmd_trades(self, args=None):
@@ -398,6 +415,7 @@ class CryptoBotAI:
 
     def stop(self):
         self.running = False
+        self.watchdog.stop()
         self.notifier.stop_command_listener()
         logger.info("CryptoBot AI stopper...")
 
