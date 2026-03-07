@@ -86,7 +86,8 @@ class TelegramNotifier:
         if handler:
             try:
                 response = handler(args)
-                self.send(response)
+                if response:
+                    self.send(response)
             except Exception as e:
                 logger.error(f"Command handler error for {command}: {e}")
                 self.send(f"Fejl ved {command}: {e}")

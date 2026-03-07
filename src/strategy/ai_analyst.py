@@ -222,3 +222,61 @@ NEWS SENTIMENT:
 
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt
+
+    def generate_report(self, epic, df, sentiment_data=None):
+        """Generate a detailed analysis report explaining the reasoning step by step."""
+        if df is None or len(df) < 50:
+            return "Ikke nok data til rapport."
+
+        latest = df.iloc[-1]
+        prompt = self._build_prompt(epic, df, sentiment_data)
+
+        report_system = """You are an expert crypto trading analyst writing a detailed report in Danish.
+
+Analyze the market data and write a structured report that explains your reasoning step by step.
+
+Write the report in this exact format (use plain text, no markdown):
+
+ANALYSE RAPPORT: {epic}
+Dato: {current date/time}
+
+1. PRIS & RANGE
+- Beskriv hvor prisen er i forhold til 24-timers range
+- Er den naer support eller resistance?
+
+2. TEKNISKE INDIKATORER
+- RSI: hvad siger den? Er den oversold/overbought?
+- EMA 9/21: hvad er trenden?
+- Bollinger Bands: hvor er prisen i forhold til baandene?
+- VWAP: er prisen over eller under?
+- Volume: er der udsving?
+
+3. PRICE ACTION
+- Beskriv de seneste candles
+- Er der reversal-moenstre (engulfing, bounce)?
+- Hvad er momentum-retningen?
+
+4. SENTIMENT
+- Hvad siger nyhederne?
+- Er markedet bullish eller bearish?
+
+5. KONKLUSION
+- Samlet vurdering
+- Signal: BUY / SELL / HOLD
+- Confidence: X/10
+- Begrundelse i 2-3 saetninger
+
+Keep it concise but informative. Max 400 words."""
+
+        try:
+            self._rate_limit()
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1000,
+                system=report_system,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
+            return f"Fejl ved rapport: {e}"

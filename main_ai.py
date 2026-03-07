@@ -193,6 +193,7 @@ class CryptoBotAI:
         self.notifier.register_command("/status", self._cmd_status)
         self.notifier.register_command("/trades", self._cmd_trades)
         self.notifier.register_command("/scan", self._cmd_scan)
+        self.notifier.register_command("/report", self._cmd_report)
         self.notifier.register_command("/stop", self._cmd_stop)
         self.notifier.register_command("/close", self._cmd_close)
 
@@ -276,6 +277,44 @@ class CryptoBotAI:
                 msg += f"❓ {epic}: Fejl ({e})\n"
         return msg
 
+    def _cmd_report(self, args=None):
+        """Generate detailed AI analysis report for a coin."""
+        if not args:
+            return "Brug: /report BTCUSD\nVaelg en coin at analysere."
+
+        epic = args[0].upper()
+        if epic not in self.coins:
+            return f"{epic} er ikke i coin-listen.\nTilgaengelige: {', '.join(self.coins)}"
+
+        try:
+            self.notifier.send(f"🧠 Genererer rapport for {epic}...")
+
+            prices = self.client.get_prices(epic, resolution=self.timeframe)
+            df = self.signals.prepare_dataframe(prices)
+            if df is None:
+                return f"Ingen data for {epic}"
+
+            df = self.signals.calculate_indicators(df)
+
+            sentiment = None
+            try:
+                sentiment = self.signals.reddit.get_sentiment(epic)
+            except Exception:
+                pass
+
+            report = self.ai.generate_report(epic, df, sentiment)
+
+            # Split long reports into multiple messages (Telegram limit: 4096 chars)
+            if len(report) > 4000:
+                parts = [report[i:i+4000] for i in range(0, len(report), 4000)]
+                for part in parts:
+                    self.notifier.send(part)
+                return None  # already sent
+            return report
+
+        except Exception as e:
+            return f"Fejl ved rapport: {e}"
+
     def _cmd_close(self, args=None):
         positions = self.client.get_positions()
         open_pos = positions.get("positions", [])
@@ -311,13 +350,18 @@ class CryptoBotAI:
     def _cmd_help(self, args=None):
         return (
             "🧠 <b>CryptoBot AI Kommandoer</b>\n\n"
-            "/ai_status - Status og positioner\n"
-            "/ai_trades - Seneste handler\n"
-            "/ai_scan - AI-analyse af alle coins\n"
-            "/ai_close EPIC - Luk position\n"
-            "/ai_close ALL - Luk alle\n"
-            "/ai_stop - Stop AI-botten\n"
-            "/ai_help - Denne besked"
+            "<b>Analyse:</b>\n"
+            "/scan - AI-analyse af alle coins\n"
+            "/report BTCUSD - Detaljeret rapport\n\n"
+            "<b>Info:</b>\n"
+            "/status - Balance og positioner\n"
+            "/trades - Seneste handler\n\n"
+            "<b>Handel:</b>\n"
+            "/close EPIC - Luk position\n"
+            "/close ALL - Luk alle\n\n"
+            "<b>System:</b>\n"
+            "/stop - Stop AI-botten\n"
+            "/help - Denne besked"
         )
 
     def stop(self):
