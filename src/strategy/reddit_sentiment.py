@@ -67,18 +67,21 @@ class RedditSentiment:
         self._last_request = time.time()
 
     def _fetch_reddit(self, query, subreddit="cryptocurrency"):
-        """Fetch recent posts from Reddit's public JSON API."""
+        """Fetch recent posts from Reddit via OAuth or old.reddit fallback."""
         self._rate_limit()
-        url = f"https://www.reddit.com/r/{subreddit}/search.json"
+
+        # Try old.reddit.com (more lenient with server requests)
+        url = f"https://old.reddit.com/r/{subreddit}/search.json"
         params = {
             "q": query,
             "sort": "new",
-            "t": "day",  # last 24 hours
+            "t": "day",
             "limit": self.max_posts,
             "restrict_sr": "on",
         }
         headers = {
-            "User-Agent": "CryptoBot/1.0 (trading sentiment analysis)",
+            "User-Agent": "Mozilla/5.0 (compatible; CryptoBot/1.0; +https://github.com/AntonKryger/CryptoBot)",
+            "Accept": "application/json",
         }
 
         try:
@@ -87,12 +90,43 @@ class RedditSentiment:
                 logger.warning("Reddit rate limit hit, backing off")
                 time.sleep(10)
                 return []
+            if resp.status_code == 403:
+                # Fallback: try fetching subreddit new posts and filter
+                return self._fetch_subreddit_new(query, subreddit, headers)
             resp.raise_for_status()
             data = resp.json()
             posts = data.get("data", {}).get("children", [])
             return [p["data"] for p in posts]
         except Exception as e:
-            logger.error(f"Reddit fetch failed for '{query}': {e}")
+            logger.error(f"Reddit fetch failed for '{query}' in r/{subreddit}: {e}")
+            return []
+
+    def _fetch_subreddit_new(self, query, subreddit, headers):
+        """Fallback: fetch newest posts from subreddit and filter by keywords."""
+        self._rate_limit()
+        url = f"https://old.reddit.com/r/{subreddit}/new.json"
+        params = {"limit": 100}
+
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.warning(f"Reddit fallback also failed: {resp.status_code}")
+                return []
+            data = resp.json()
+            posts = data.get("data", {}).get("children", [])
+
+            # Filter posts that mention any of the query terms
+            terms = [t.strip().lower() for t in query.split(" OR ")]
+            filtered = []
+            for p in posts:
+                post = p["data"]
+                text = (post.get("title", "") + " " + post.get("selftext", "")).lower()
+                if any(term in text for term in terms):
+                    filtered.append(post)
+
+            return filtered[:self.max_posts]
+        except Exception as e:
+            logger.error(f"Reddit fallback failed for r/{subreddit}: {e}")
             return []
 
     def _analyze_text(self, text):
