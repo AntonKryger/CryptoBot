@@ -259,7 +259,7 @@ class CryptoBotAI:
         emoji = "🟢" if direction == "BUY" else "🔴"
         action = "LONG" if direction == "BUY" else "SHORT"
         confidence = details.get("ai_confidence", "?")
-        reasoning = details.get("ai_reasoning", "")[:200]
+        reasoning = details.get("ai_reasoning", "")[:500]
         agreement = details.get("bot_agreement")
         cat = self.risk.get_coin_category(epic)
 
