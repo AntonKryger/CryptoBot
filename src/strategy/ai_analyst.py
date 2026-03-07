@@ -219,6 +219,10 @@ NEWS SENTIMENT:
             if fng:
                 prompt += f"\n- Fear & Greed Index: {fng['value']}/100 ({fng['label']})"
 
+            cg = sentiment_data.get("coingecko")
+            if cg:
+                prompt += f"\n- CoinGecko community: {cg['up_pct']:.0f}% bullish / {cg['down_pct']:.0f}% bearish"
+
             if sentiment_data.get("total_posts", 0) > 0:
                 prompt += f"\n- News posts analyzed: {sentiment_data['total_posts']}"
             if sentiment_data.get("top_bullish"):

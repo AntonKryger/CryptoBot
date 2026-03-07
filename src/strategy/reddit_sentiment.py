@@ -14,16 +14,16 @@ logger = logging.getLogger(__name__)
 
 # Map trading epics to search terms
 EPIC_TO_SEARCH = {
-    "BTCUSD": {"reddit": ["bitcoin", "btc"], "cryptopanic": "BTC"},
-    "ETHUSD": {"reddit": ["ethereum", "eth"], "cryptopanic": "ETH"},
-    "SOLUSD": {"reddit": ["solana", "sol"], "cryptopanic": "SOL"},
-    "XRPUSD": {"reddit": ["xrp", "ripple"], "cryptopanic": "XRP"},
-    "ADAUSD": {"reddit": ["cardano", "ada"], "cryptopanic": "ADA"},
-    "DOGEUSD": {"reddit": ["dogecoin", "doge"], "cryptopanic": "DOGE"},
-    "AVAXUSD": {"reddit": ["avalanche", "avax"], "cryptopanic": "AVAX"},
-    "DOTUSD": {"reddit": ["polkadot", "dot"], "cryptopanic": "DOT"},
-    "LINKUSD": {"reddit": ["chainlink", "link"], "cryptopanic": "LINK"},
-    "MATICUSD": {"reddit": ["polygon", "matic"], "cryptopanic": "MATIC"},
+    "BTCUSD": {"reddit": ["bitcoin", "btc"], "cryptopanic": "BTC", "coingecko": "bitcoin"},
+    "ETHUSD": {"reddit": ["ethereum", "eth"], "cryptopanic": "ETH", "coingecko": "ethereum"},
+    "SOLUSD": {"reddit": ["solana", "sol"], "cryptopanic": "SOL", "coingecko": "solana"},
+    "XRPUSD": {"reddit": ["xrp", "ripple"], "cryptopanic": "XRP", "coingecko": "ripple"},
+    "ADAUSD": {"reddit": ["cardano", "ada"], "cryptopanic": "ADA", "coingecko": "cardano"},
+    "DOGEUSD": {"reddit": ["dogecoin", "doge"], "cryptopanic": "DOGE", "coingecko": "dogecoin"},
+    "AVAXUSD": {"reddit": ["avalanche", "avax"], "cryptopanic": "AVAX", "coingecko": "avalanche-2"},
+    "DOTUSD": {"reddit": ["polkadot", "dot"], "cryptopanic": "DOT", "coingecko": "polkadot"},
+    "LINKUSD": {"reddit": ["chainlink", "link"], "cryptopanic": "LINK", "coingecko": "chainlink"},
+    "MATICUSD": {"reddit": ["polygon", "matic"], "cryptopanic": "MATIC", "coingecko": "matic-network"},
 }
 
 BULLISH_WORDS = [
@@ -237,6 +237,35 @@ class RedditSentiment:
             "source": post.get("source", {}).get("title", ""),
         }
 
+    # ── CoinGecko (free, coin-specific sentiment) ─────────────────
+
+    def _fetch_coingecko_sentiment(self, coin_id):
+        """Fetch sentiment from CoinGecko (free, no API key)."""
+        self._rate_limit()
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        params = {
+            "localization": "false",
+            "tickers": "false",
+            "market_data": "false",
+            "community_data": "true",
+            "developer_data": "false",
+            "sparkline": "false",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 429:
+                logger.warning("CoinGecko rate limited")
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            up = data.get("sentiment_votes_up_percentage", 50) or 50
+            down = data.get("sentiment_votes_down_percentage", 50) or 50
+            logger.info(f"CoinGecko {coin_id}: {up:.0f}% bullish / {down:.0f}% bearish")
+            return {"up_pct": up, "down_pct": down}
+        except Exception as e:
+            logger.error(f"CoinGecko fetch failed for {coin_id}: {e}")
+            return None
+
     # ── Fear & Greed Index ────────────────────────────────────────
 
     def _fetch_fear_greed(self):
@@ -317,27 +346,39 @@ class RedditSentiment:
         all_titles_bull = []
         all_titles_bear = []
 
-        # ── CryptoPanic (primary - more reliable) ──
+        # ── CoinGecko (coin-specific sentiment, free) ──
+        coingecko_id = mapping.get("coingecko")
+        coingecko_data = None
+        if coingecko_id:
+            coingecko_data = self._fetch_coingecko_sentiment(coingecko_id)
+            if coingecko_data:
+                # Convert percentage to weighted score (weight 4 = significant)
+                up = coingecko_data["up_pct"]
+                down = coingecko_data["down_pct"]
+                total_bullish += (up / 100) * 4
+                total_bearish += (down / 100) * 4
+                total_posts += 1  # count as data source
+
+        # ── CryptoPanic (if available - may be rate limited) ──
         if self.cryptopanic_enabled:
             currency = mapping.get("cryptopanic", epic.replace("USD", ""))
             cp_posts = self._fetch_cryptopanic(currency)
 
-            # Use CryptoPanic's own bullish/bearish filters for extra signal
-            cp_bullish_count = self._fetch_cryptopanic_bullish(currency)
-            cp_bearish_count = self._fetch_cryptopanic_bearish(currency)
-            # Weight filter counts heavily - CryptoPanic community votes
-            total_bullish += cp_bullish_count * 3
-            total_bearish += cp_bearish_count * 3
+            if cp_posts:  # Only do extra calls if main call succeeded
+                cp_bullish_count = self._fetch_cryptopanic_bullish(currency)
+                cp_bearish_count = self._fetch_cryptopanic_bearish(currency)
+                total_bullish += cp_bullish_count * 3
+                total_bearish += cp_bearish_count * 3
 
-            for post in cp_posts:
-                scored = self._score_cryptopanic_post(post)
-                total_bullish += scored["bullish"]
-                total_bearish += scored["bearish"]
-                if scored["bullish"] > scored["bearish"]:
-                    all_titles_bull.append(scored["title"])
-                elif scored["bearish"] > scored["bullish"]:
-                    all_titles_bear.append(scored["title"])
-            total_posts += len(cp_posts)
+                for post in cp_posts:
+                    scored = self._score_cryptopanic_post(post)
+                    total_bullish += scored["bullish"]
+                    total_bearish += scored["bearish"]
+                    if scored["bullish"] > scored["bearish"]:
+                        all_titles_bull.append(scored["title"])
+                    elif scored["bearish"] > scored["bullish"]:
+                        all_titles_bear.append(scored["title"])
+                total_posts += len(cp_posts)
 
         # ── Reddit (secondary) ──
         if self.reddit_enabled:
@@ -390,6 +431,9 @@ class RedditSentiment:
             "sources": [],
         }
         result["sources"].append("Fear&Greed")
+        if coingecko_data:
+            result["sources"].append("CoinGecko")
+            result["coingecko"] = coingecko_data
         if self.cryptopanic_enabled:
             result["sources"].append("CryptoPanic")
         if self.reddit_enabled:
