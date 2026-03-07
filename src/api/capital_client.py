@@ -120,7 +120,13 @@ class CapitalClient:
         """Get current account balance and P/L."""
         data = self.get_accounts()
         if data and "accounts" in data:
-            account = data["accounts"][0]
+            # Find the correct account if account_name is set
+            account = data["accounts"][0]  # default to first
+            if self.account_name:
+                for acc in data["accounts"]:
+                    if acc.get("accountName", "").lower() == self.account_name.lower():
+                        account = acc
+                        break
             return {
                 "balance": account["balance"]["balance"],
                 "deposit": account["balance"]["deposit"],
