@@ -155,24 +155,60 @@ class RedditSentiment:
     # ── CryptoPanic ───────────────────────────────────────────────
 
     def _fetch_cryptopanic(self, currency):
-        """Fetch news from CryptoPanic API."""
+        """Fetch news from CryptoPanic Developer API v2."""
         self._rate_limit()
-        url = "https://cryptopanic.com/api/free/v1/posts/"
+        url = "https://cryptopanic.com/api/developer/v2/posts/"
         params = {
             "auth_token": self.cryptopanic_key,
             "currencies": currency,
-            "filter": "hot",
             "public": "true",
+            "kind": "news",
         }
 
         try:
             resp = requests.get(url, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("results", [])
+            results = data.get("results", [])
+            logger.info(f"CryptoPanic: {len(results)} posts for {currency}")
+            return results
         except Exception as e:
             logger.error(f"CryptoPanic fetch failed for {currency}: {e}")
             return []
+
+    def _fetch_cryptopanic_bullish(self, currency):
+        """Fetch bullish-filtered news from CryptoPanic."""
+        self._rate_limit()
+        url = "https://cryptopanic.com/api/developer/v2/posts/"
+        params = {
+            "auth_token": self.cryptopanic_key,
+            "currencies": currency,
+            "public": "true",
+            "filter": "bullish",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return len(resp.json().get("results", []))
+        except Exception:
+            return 0
+
+    def _fetch_cryptopanic_bearish(self, currency):
+        """Fetch bearish-filtered news from CryptoPanic."""
+        self._rate_limit()
+        url = "https://cryptopanic.com/api/developer/v2/posts/"
+        params = {
+            "auth_token": self.cryptopanic_key,
+            "currencies": currency,
+            "public": "true",
+            "filter": "bearish",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return len(resp.json().get("results", []))
+        except Exception:
+            return 0
 
     def _score_cryptopanic_post(self, post):
         """Score a CryptoPanic news item."""
@@ -255,6 +291,14 @@ class RedditSentiment:
         if self.cryptopanic_enabled:
             currency = mapping.get("cryptopanic", epic.replace("USD", ""))
             cp_posts = self._fetch_cryptopanic(currency)
+
+            # Use CryptoPanic's own bullish/bearish filters for extra signal
+            cp_bullish_count = self._fetch_cryptopanic_bullish(currency)
+            cp_bearish_count = self._fetch_cryptopanic_bearish(currency)
+            # Weight filter counts heavily - CryptoPanic community votes
+            total_bullish += cp_bullish_count * 3
+            total_bearish += cp_bearish_count * 3
+
             for post in cp_posts:
                 scored = self._score_cryptopanic_post(post)
                 total_bullish += scored["bullish"]
