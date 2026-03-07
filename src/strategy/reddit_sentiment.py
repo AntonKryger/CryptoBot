@@ -1,28 +1,29 @@
 """
 Reddit Sentiment Analysis for CryptoBot.
-Fetches recent posts from crypto subreddits and scores sentiment
-as bullish/bearish using keyword analysis.
+Uses Reddit OAuth API + CryptoPanic for crypto sentiment.
+Scores sentiment as bullish/bearish using keyword analysis.
 """
 
 import requests
 import logging
 import time
-from datetime import datetime, timedelta
+import math
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Map trading epics to Reddit search terms
+# Map trading epics to search terms
 EPIC_TO_SEARCH = {
-    "BTCUSD": ["bitcoin", "btc"],
-    "ETHUSD": ["ethereum", "eth"],
-    "SOLUSD": ["solana", "sol"],
-    "XRPUSD": ["xrp", "ripple"],
-    "ADAUSD": ["cardano", "ada"],
-    "DOGEUSD": ["dogecoin", "doge"],
-    "AVAXUSD": ["avalanche", "avax"],
-    "DOTUSD": ["polkadot", "dot"],
-    "LINKUSD": ["chainlink", "link"],
-    "MATICUSD": ["polygon", "matic"],
+    "BTCUSD": {"reddit": ["bitcoin", "btc"], "cryptopanic": "BTC"},
+    "ETHUSD": {"reddit": ["ethereum", "eth"], "cryptopanic": "ETH"},
+    "SOLUSD": {"reddit": ["solana", "sol"], "cryptopanic": "SOL"},
+    "XRPUSD": {"reddit": ["xrp", "ripple"], "cryptopanic": "XRP"},
+    "ADAUSD": {"reddit": ["cardano", "ada"], "cryptopanic": "ADA"},
+    "DOGEUSD": {"reddit": ["dogecoin", "doge"], "cryptopanic": "DOGE"},
+    "AVAXUSD": {"reddit": ["avalanche", "avax"], "cryptopanic": "AVAX"},
+    "DOTUSD": {"reddit": ["polkadot", "dot"], "cryptopanic": "DOT"},
+    "LINKUSD": {"reddit": ["chainlink", "link"], "cryptopanic": "LINK"},
+    "MATICUSD": {"reddit": ["polygon", "matic"], "cryptopanic": "MATIC"},
 }
 
 BULLISH_WORDS = [
@@ -47,31 +48,85 @@ SUBREDDITS = ["cryptocurrency", "CryptoMarkets"]
 
 
 class RedditSentiment:
-    """Fetches and analyzes Reddit sentiment for crypto coins."""
+    """Fetches and analyzes sentiment from Reddit OAuth + CryptoPanic."""
 
     def __init__(self, config):
         reddit_cfg = config.get("reddit", {})
         self.enabled = reddit_cfg.get("enabled", True)
         self.cache_minutes = reddit_cfg.get("cache_minutes", 15)
         self.max_posts = reddit_cfg.get("max_posts", 25)
+
+        # Reddit OAuth credentials
+        self.reddit_client_id = reddit_cfg.get("client_id", "")
+        self.reddit_client_secret = reddit_cfg.get("client_secret", "")
+        self.reddit_username = reddit_cfg.get("username", "")
+        self.reddit_password = reddit_cfg.get("password", "")
+        self.reddit_enabled = bool(self.reddit_client_id and self.reddit_client_secret)
+        self._reddit_token = None
+        self._reddit_token_expiry = 0
+
+        # CryptoPanic
+        cryptopanic_cfg = config.get("cryptopanic", {})
+        self.cryptopanic_key = cryptopanic_cfg.get("api_key", "")
+        self.cryptopanic_enabled = bool(self.cryptopanic_key)
+
         self._cache = {}  # {epic: (timestamp, sentiment_data)}
-        self._last_request = 0  # rate limiting
-        self._request_delay = 2  # seconds between Reddit requests
+        self._last_request = 0
+        self._request_delay = 1.5  # seconds between requests
+
+        if self.reddit_enabled:
+            logger.info("Reddit OAuth configured")
+        if self.cryptopanic_enabled:
+            logger.info("CryptoPanic API configured")
+        if not self.reddit_enabled and not self.cryptopanic_enabled:
+            logger.warning("No sentiment sources configured (Reddit/CryptoPanic)")
 
     def _rate_limit(self):
-        """Respect Reddit's rate limits."""
+        """Rate limit requests."""
         now = time.time()
         elapsed = now - self._last_request
         if elapsed < self._request_delay:
             time.sleep(self._request_delay - elapsed)
         self._last_request = time.time()
 
-    def _fetch_reddit(self, query, subreddit="cryptocurrency"):
-        """Fetch recent posts from Reddit via OAuth or old.reddit fallback."""
-        self._rate_limit()
+    # ── Reddit OAuth ──────────────────────────────────────────────
 
-        # Try old.reddit.com (more lenient with server requests)
-        url = f"https://old.reddit.com/r/{subreddit}/search.json"
+    def _get_reddit_token(self):
+        """Get or refresh Reddit OAuth token."""
+        now = time.time()
+        if self._reddit_token and now < self._reddit_token_expiry:
+            return self._reddit_token
+
+        try:
+            auth = requests.auth.HTTPBasicAuth(self.reddit_client_id, self.reddit_client_secret)
+            data = {
+                "grant_type": "password",
+                "username": self.reddit_username,
+                "password": self.reddit_password,
+            }
+            headers = {"User-Agent": "CryptoBot/1.0 by AntonKryger"}
+            resp = requests.post(
+                "https://www.reddit.com/api/v1/access_token",
+                auth=auth, data=data, headers=headers, timeout=10,
+            )
+            resp.raise_for_status()
+            token_data = resp.json()
+            self._reddit_token = token_data["access_token"]
+            self._reddit_token_expiry = now + token_data.get("expires_in", 3600) - 60
+            logger.info("Reddit OAuth token obtained")
+            return self._reddit_token
+        except Exception as e:
+            logger.error(f"Reddit OAuth failed: {e}")
+            return None
+
+    def _fetch_reddit(self, query, subreddit="cryptocurrency"):
+        """Fetch posts from Reddit using OAuth API."""
+        token = self._get_reddit_token()
+        if not token:
+            return []
+
+        self._rate_limit()
+        url = f"https://oauth.reddit.com/r/{subreddit}/search"
         params = {
             "q": query,
             "sort": "new",
@@ -80,96 +135,105 @@ class RedditSentiment:
             "restrict_sr": "on",
         }
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; CryptoBot/1.0; +https://github.com/AntonKryger/CryptoBot)",
-            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "CryptoBot/1.0 by AntonKryger",
         }
 
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code == 429:
-                logger.warning("Reddit rate limit hit, backing off")
-                time.sleep(10)
+            if resp.status_code == 401:
+                self._reddit_token = None  # force refresh
                 return []
-            if resp.status_code == 403:
-                # Fallback: try fetching subreddit new posts and filter
-                return self._fetch_subreddit_new(query, subreddit, headers)
             resp.raise_for_status()
             data = resp.json()
             posts = data.get("data", {}).get("children", [])
             return [p["data"] for p in posts]
         except Exception as e:
-            logger.error(f"Reddit fetch failed for '{query}' in r/{subreddit}: {e}")
+            logger.error(f"Reddit fetch failed for '{query}': {e}")
             return []
 
-    def _fetch_subreddit_new(self, query, subreddit, headers):
-        """Fallback: fetch newest posts from subreddit and filter by keywords."""
+    # ── CryptoPanic ───────────────────────────────────────────────
+
+    def _fetch_cryptopanic(self, currency):
+        """Fetch news from CryptoPanic API."""
         self._rate_limit()
-        url = f"https://old.reddit.com/r/{subreddit}/new.json"
-        params = {"limit": 100}
+        url = "https://cryptopanic.com/api/free/v1/posts/"
+        params = {
+            "auth_token": self.cryptopanic_key,
+            "currencies": currency,
+            "filter": "hot",
+            "public": "true",
+        }
 
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                logger.warning(f"Reddit fallback also failed: {resp.status_code}")
-                return []
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
             data = resp.json()
-            posts = data.get("data", {}).get("children", [])
-
-            # Filter posts that mention any of the query terms
-            terms = [t.strip().lower() for t in query.split(" OR ")]
-            filtered = []
-            for p in posts:
-                post = p["data"]
-                text = (post.get("title", "") + " " + post.get("selftext", "")).lower()
-                if any(term in text for term in terms):
-                    filtered.append(post)
-
-            return filtered[:self.max_posts]
+            return data.get("results", [])
         except Exception as e:
-            logger.error(f"Reddit fallback failed for r/{subreddit}: {e}")
+            logger.error(f"CryptoPanic fetch failed for {currency}: {e}")
             return []
 
+    def _score_cryptopanic_post(self, post):
+        """Score a CryptoPanic news item."""
+        title = post.get("title", "")
+        # CryptoPanic provides its own sentiment votes
+        votes = post.get("votes", {})
+        positive = votes.get("positive", 0)
+        negative = votes.get("negative", 0)
+        important = votes.get("important", 0)
+
+        # Also do keyword analysis on title
+        title_bull, title_bear = self._analyze_text(title)
+
+        # Combine CryptoPanic votes with keyword analysis
+        bullish = title_bull + positive + (important * 0.5)
+        bearish = title_bear + negative
+
+        return {
+            "bullish": bullish,
+            "bearish": bearish,
+            "title": title[:80],
+            "source": post.get("source", {}).get("title", ""),
+        }
+
+    # ── Shared analysis ───────────────────────────────────────────
+
     def _analyze_text(self, text):
-        """Score a text as bullish or bearish.
-        Returns (bullish_count, bearish_count)."""
+        """Score text as bullish/bearish. Returns (bullish_count, bearish_count)."""
         text_lower = text.lower()
         bullish = sum(1 for word in BULLISH_WORDS if word in text_lower)
         bearish = sum(1 for word in BEARISH_WORDS if word in text_lower)
         return bullish, bearish
 
-    def _score_post(self, post):
-        """Score a single Reddit post. Returns weighted sentiment."""
+    def _score_reddit_post(self, post):
+        """Score a single Reddit post."""
         title = post.get("title", "")
-        selftext = post.get("selftext", "")[:500]  # limit text length
+        selftext = post.get("selftext", "")[:500]
         score = post.get("score", 1)
         num_comments = post.get("num_comments", 0)
 
-        # Analyze title and body
         title_bull, title_bear = self._analyze_text(title)
         body_bull, body_bear = self._analyze_text(selftext)
 
         total_bull = title_bull + body_bull
         total_bear = title_bear + body_bear
 
-        # Weight by post popularity (log scale to avoid outliers)
-        import math
         popularity = 1 + math.log1p(max(score, 0)) + math.log1p(num_comments) * 0.5
 
         return {
             "bullish": total_bull * popularity,
             "bearish": total_bear * popularity,
-            "raw_bullish": total_bull,
-            "raw_bearish": total_bear,
-            "popularity": popularity,
             "title": title[:80],
             "score": score,
             "comments": num_comments,
         }
 
+    # ── Main sentiment API ────────────────────────────────────────
+
     def get_sentiment(self, epic):
-        """Get sentiment analysis for a coin.
-        Returns dict with sentiment score, counts, and top posts.
-        Uses cache to avoid hammering Reddit."""
+        """Get combined sentiment from all sources.
+        Returns dict with score (0-100), label, and details."""
         if not self.enabled:
             return self._neutral_result()
 
@@ -180,48 +244,70 @@ class RedditSentiment:
             if age_minutes < self.cache_minutes:
                 return cached_data
 
-        search_terms = EPIC_TO_SEARCH.get(epic, [epic.replace("USD", "").lower()])
-        query = " OR ".join(search_terms)
+        mapping = EPIC_TO_SEARCH.get(epic, {})
+        total_bullish = 0
+        total_bearish = 0
+        total_posts = 0
+        all_titles_bull = []
+        all_titles_bear = []
 
-        all_posts = []
-        for subreddit in SUBREDDITS:
-            posts = self._fetch_reddit(query, subreddit)
-            all_posts.extend(posts)
+        # ── CryptoPanic (primary - more reliable) ──
+        if self.cryptopanic_enabled:
+            currency = mapping.get("cryptopanic", epic.replace("USD", ""))
+            cp_posts = self._fetch_cryptopanic(currency)
+            for post in cp_posts:
+                scored = self._score_cryptopanic_post(post)
+                total_bullish += scored["bullish"]
+                total_bearish += scored["bearish"]
+                if scored["bullish"] > scored["bearish"]:
+                    all_titles_bull.append(scored["title"])
+                elif scored["bearish"] > scored["bullish"]:
+                    all_titles_bear.append(scored["title"])
+            total_posts += len(cp_posts)
 
-        if not all_posts:
-            result = self._neutral_result()
-            result["reason"] = "No Reddit posts found"
-            self._cache[epic] = (datetime.now(), result)
-            return result
+        # ── Reddit (secondary) ──
+        if self.reddit_enabled:
+            search_terms = mapping.get("reddit", [epic.replace("USD", "").lower()])
+            query = " OR ".join(search_terms)
+            for subreddit in SUBREDDITS:
+                posts = self._fetch_reddit(query, subreddit)
+                for post in posts:
+                    scored = self._score_reddit_post(post)
+                    total_bullish += scored["bullish"]
+                    total_bearish += scored["bearish"]
+                    if scored["bullish"] > scored["bearish"]:
+                        all_titles_bull.append(scored["title"])
+                    elif scored["bearish"] > scored["bullish"]:
+                        all_titles_bear.append(scored["title"])
+                total_posts += len(posts)
 
-        # Score all posts
-        scored = [self._score_post(p) for p in all_posts]
-
-        total_bullish = sum(s["bullish"] for s in scored)
-        total_bearish = sum(s["bearish"] for s in scored)
+        # Calculate score
         total = total_bullish + total_bearish
-
         if total == 0:
-            sentiment_score = 50  # neutral
+            sentiment_score = 50
         else:
-            sentiment_score = (total_bullish / total) * 100  # 0=very bearish, 100=very bullish
-
-        # Top posts by sentiment strength
-        top_bullish = sorted(scored, key=lambda s: s["raw_bullish"], reverse=True)[:3]
-        top_bearish = sorted(scored, key=lambda s: s["raw_bearish"], reverse=True)[:3]
+            sentiment_score = (total_bullish / total) * 100
 
         result = {
-            "score": round(sentiment_score, 1),  # 0-100
+            "score": round(sentiment_score, 1),
             "label": self._score_to_label(sentiment_score),
-            "total_posts": len(all_posts),
+            "total_posts": total_posts,
             "bullish_weight": round(total_bullish, 1),
             "bearish_weight": round(total_bearish, 1),
-            "top_bullish": [p["title"] for p in top_bullish if p["raw_bullish"] > 0],
-            "top_bearish": [p["title"] for p in top_bearish if p["raw_bearish"] > 0],
+            "top_bullish": all_titles_bull[:3],
+            "top_bearish": all_titles_bear[:3],
+            "sources": [],
         }
+        if self.cryptopanic_enabled:
+            result["sources"].append("CryptoPanic")
+        if self.reddit_enabled:
+            result["sources"].append("Reddit")
 
         self._cache[epic] = (datetime.now(), result)
-        logger.info(f"Reddit sentiment {epic}: {result['label']} ({result['score']}/100, {result['total_posts']} posts)")
+        logger.info(
+            f"Sentiment {epic}: {result['label']} ({result['score']}/100, "
+            f"{result['total_posts']} posts, sources: {result['sources']})"
+        )
         return result
 
     def _neutral_result(self):
@@ -233,6 +319,7 @@ class RedditSentiment:
             "bearish_weight": 0,
             "top_bullish": [],
             "top_bearish": [],
+            "sources": [],
         }
 
     def _score_to_label(self, score):
@@ -247,24 +334,22 @@ class RedditSentiment:
         return "NEUTRAL"
 
     def get_signal_adjustment(self, epic):
-        """Get a score adjustment for the signal engine.
-        Returns: (buy_adjustment, sell_adjustment, sentiment_details)
-        Each adjustment is -1 to +2."""
+        """Get score adjustment for signal engine.
+        Returns: (buy_adjustment, sell_adjustment, sentiment_details)"""
         sentiment = self.get_sentiment(epic)
-        score = sentiment["score"]
         label = sentiment["label"]
 
         buy_adj = 0
         sell_adj = 0
 
         if label == "BULLISH":
-            buy_adj = 2   # strong boost to buy signals
-            sell_adj = -1  # penalize short signals
+            buy_adj = 2
+            sell_adj = -1
         elif label == "SLIGHTLY_BULLISH":
             buy_adj = 1
         elif label == "BEARISH":
-            sell_adj = 2   # strong boost to short signals
-            buy_adj = -1   # penalize buy signals
+            sell_adj = 2
+            buy_adj = -1
         elif label == "SLIGHTLY_BEARISH":
             sell_adj = 1
 
