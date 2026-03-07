@@ -131,12 +131,15 @@ class CryptoBot:
                     result, error = self.executor.execute_trade(epic, signal_type, details, current_price)
 
                     if result:
+                        # Use actual values from executor (already calculated there)
+                        size = self.risk.calculate_position_size(balance["balance"], current_price)
                         stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                         take_profit = self.risk.calculate_take_profit(current_price, signal_type)
-                        size = self.risk.calculate_position_size(balance["balance"], current_price)
                         self.notifier.notify_trade(signal_type, epic, size, current_price, stop_loss, take_profit, details)
                     elif error:
-                        logger.info(f"{epic}: Kunne ikke handle - {error}")
+                        # Only log, don't spam - executor handles cooldown
+                        if "Cooldown" not in error:
+                            logger.info(f"{epic}: Kunne ikke handle - {error}")
                 else:
                     logger.info(f"{epic}: HOLD ({details.get('reason', 'RSI=' + str(round(details.get('rsi', 0), 1)))})")
 

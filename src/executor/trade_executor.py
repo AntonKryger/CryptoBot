@@ -14,6 +14,10 @@ class TradeExecutor:
         self.risk = risk_manager
         self.config = config
 
+        # Local tracking to prevent duplicate trades (API has delay)
+        self._recently_traded = {}  # {epic: timestamp}
+        self._trade_cooldown = 300  # 5 minutes cooldown per coin
+
         self.db_path = config.get("database", {}).get("path", "data/trades.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
@@ -48,6 +52,15 @@ class TradeExecutor:
 
     def execute_trade(self, epic, signal, signal_details, current_price):
         """Execute a BUY or SELL trade with risk management."""
+        # Check local cooldown first (prevents rapid-fire duplicates)
+        now = datetime.now()
+        if epic in self._recently_traded:
+            last_trade = self._recently_traded[epic]
+            seconds_ago = (now - last_trade).total_seconds()
+            if seconds_ago < self._trade_cooldown:
+                remaining = int(self._trade_cooldown - seconds_ago)
+                return None, f"Cooldown aktiv for {epic} ({remaining}s tilbage)"
+
         # Check if we can open a new position
         positions = self.client.get_positions()
         open_count = len(positions.get("positions", []))
@@ -59,10 +72,11 @@ class TradeExecutor:
             logger.warning(f"Cannot open position: {reason}")
             return None, reason
 
-        # Check if we already have a position in this epic
+        # Check if we already have a position in this epic (API check)
         for pos in positions.get("positions", []):
             if pos["market"]["epic"] == epic:
                 logger.info(f"Already have position in {epic}, skipping")
+                self._recently_traded[epic] = now  # also set cooldown
                 return None, f"Allerede en åben position i {epic}"
 
         # Calculate position size and risk levels
@@ -103,10 +117,14 @@ class TradeExecutor:
             db.close()
 
             logger.info(f"Trade executed: {signal} {epic} x{size} @ {current_price} | SL: {stop_loss} | TP: {take_profit}")
+            # Mark as recently traded to prevent duplicates
+            self._recently_traded[epic] = datetime.now()
             return result, None
 
         except Exception as e:
             logger.error(f"Trade execution failed: {e}")
+            # Also set cooldown on failure to prevent spam
+            self._recently_traded[epic] = datetime.now()
             return None, str(e)
 
     def check_trailing_stops(self):
