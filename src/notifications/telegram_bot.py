@@ -1,11 +1,13 @@
 import logging
 import requests
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    """Send trade notifications via Telegram."""
+    """Send trade notifications and handle commands via Telegram."""
 
     def __init__(self, config):
         tg_cfg = config.get("telegram", {})
@@ -13,6 +15,85 @@ class TelegramNotifier:
         self.bot_token = tg_cfg.get("bot_token", "")
         self.chat_id = tg_cfg.get("chat_id", "")
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+
+        # Command handling
+        self._last_update_id = 0
+        self._command_handlers = {}
+        self._polling_thread = None
+        self._polling_active = False
+
+    # ── Command system ───────────────────────────────────────────
+
+    def register_command(self, command, handler):
+        """Register a handler function for a /command."""
+        self._command_handlers[command] = handler
+
+    def start_command_listener(self):
+        """Start polling for Telegram commands in a background thread."""
+        if not self.enabled:
+            logger.debug("Telegram disabled, skipping command listener")
+            return
+
+        self._polling_active = True
+        self._polling_thread = threading.Thread(target=self._poll_updates, daemon=True)
+        self._polling_thread.start()
+        logger.info("Telegram command listener started")
+
+    def stop_command_listener(self):
+        """Stop the command polling thread."""
+        self._polling_active = False
+
+    def _poll_updates(self):
+        """Poll Telegram for new messages/commands."""
+        while self._polling_active:
+            try:
+                resp = requests.get(f"{self.base_url}/getUpdates", params={
+                    "offset": self._last_update_id + 1,
+                    "timeout": 10,
+                }, timeout=15)
+
+                if resp.status_code != 200:
+                    time.sleep(5)
+                    continue
+
+                data = resp.json()
+                for update in data.get("result", []):
+                    self._last_update_id = update["update_id"]
+                    self._handle_update(update)
+
+            except Exception as e:
+                logger.error(f"Telegram polling error: {e}")
+                time.sleep(5)
+
+    def _handle_update(self, update):
+        """Process a single Telegram update."""
+        message = update.get("message", {})
+        text = message.get("text", "")
+        chat_id = str(message.get("chat", {}).get("id", ""))
+
+        # Only respond to the configured chat
+        if chat_id != self.chat_id:
+            return
+
+        if not text.startswith("/"):
+            return
+
+        parts = text.split()
+        command = parts[0].split("@")[0].lower()  # handle /status@botname
+        args = parts[1:]
+        handler = self._command_handlers.get(command)
+
+        if handler:
+            try:
+                response = handler(args)
+                self.send(response)
+            except Exception as e:
+                logger.error(f"Command handler error for {command}: {e}")
+                self.send(f"Fejl ved {command}: {e}")
+        else:
+            self.send(f"Ukendt kommando: {command}\nBrug /help for at se kommandoer.")
+
+    # ── Send messages ────────────────────────────────────────────
 
     def send(self, message):
         """Send a message to the configured Telegram chat."""

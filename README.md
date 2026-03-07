@@ -7,22 +7,17 @@ Automatiseret crypto trading bot der handler CFD'er via Capital.com's API. Bruge
 Aktiv - koerer live paa demo-konto
 
 ## Sidst arbejdet paa
-**Dato:** 07-03-2026 00:10
+**Dato:** 07-03-2026 02:30
 **Hvad blev lavet:**
-- Projekt oprettet med fuld arkitektur
-- Capital.com API integration (REST, auth med custom API password)
-- Signal engine (EMA 9/21, RSI, Volume, VWAP) - rene pandas beregninger
-- Risk manager med kill switch, trailing stops, position sizing
-- Trade executor med SQLite logging
-- Telegram notifikationer (@claude_cryptobot_bot)
-- Test-handel gennemfoert (1 XRP koeb + luk)
-- Deployed til Hetzner VPS (CX23, Nuremberg) - koerer 24/7
-- Docker setup med auto-restart
+- Telegram kommandoer implementeret (/status, /trades, /buy, /sell, /close, /stop, /help)
+- Command listener i baggrundstraad (polling-baseret)
+- SQLite thread-safety fix (ny forbindelse per forespoergsel)
+- Ny Hetzner VPS med SSH-noegle (ed25519) i stedet for password
+- Re-deployed til VPS med Docker
 
 **Naeste skridt:**
 - [ ] Backtesting paa historisk data
 - [ ] Multi-strategi: flere demo-konti med A/B test
-- [ ] Telegram kommandoer (/status, /stop)
 - [ ] Forbedre signal engine baseret paa resultater
 - [ ] Tilfoej flere indikator-kombinationer
 
@@ -72,9 +67,9 @@ Multi-signal tilgang - handler kun naar flere indikatorer er enige:
 - [x] Konfigurerbar risikoprofil via config.yaml
 - [x] Data-analyse modul (Claude Code samarbejde)
 - [x] Cloud deployment (Hetzner VPS, Docker, 24/7)
+- [x] Telegram kommandoer (/status, /trades, /buy, /sell, /close, /stop, /help)
 - [ ] Multi-strategi (flere demo-konti)
 - [ ] Backtesting
-- [ ] Telegram kommandoer
 
 ## Installation
 ```bash

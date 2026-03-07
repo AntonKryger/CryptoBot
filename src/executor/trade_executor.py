@@ -14,14 +14,18 @@ class TradeExecutor:
         self.risk = risk_manager
         self.config = config
 
-        db_path = config.get("database", {}).get("path", "data/trades.db")
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.db = sqlite3.connect(db_path)
+        self.db_path = config.get("database", {}).get("path", "data/trades.db")
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
+
+    def _get_db(self):
+        """Get a thread-safe database connection."""
+        return sqlite3.connect(self.db_path)
 
     def _init_db(self):
         """Create trades table if it doesn't exist."""
-        self.db.execute("""
+        db = self._get_db()
+        db.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -39,7 +43,8 @@ class TradeExecutor:
                 signal_details TEXT
             )
         """)
-        self.db.commit()
+        db.commit()
+        db.close()
 
     def execute_trade(self, epic, signal, signal_details, current_price):
         """Execute a BUY or SELL trade with risk management."""
@@ -78,7 +83,8 @@ class TradeExecutor:
             deal_id = result.get("dealReference", "unknown")
 
             # Log to database
-            self.db.execute("""
+            db = self._get_db()
+            db.execute("""
                 INSERT INTO trades (timestamp, epic, direction, size, entry_price,
                                     stop_loss, take_profit, deal_id, status, signal_details)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
@@ -93,7 +99,8 @@ class TradeExecutor:
                 deal_id,
                 str(signal_details),
             ))
-            self.db.commit()
+            db.commit()
+            db.close()
 
             logger.info(f"Trade executed: {signal} {epic} x{size} @ {current_price} | SL: {stop_loss} | TP: {take_profit}")
             return result, None
@@ -138,15 +145,19 @@ class TradeExecutor:
 
     def get_trade_history(self, limit=50):
         """Get recent trades from the database."""
-        cursor = self.db.execute(
+        db = self._get_db()
+        cursor = db.execute(
             "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,)
         )
         columns = [desc[0] for desc in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        db.close()
+        return results
 
     def get_stats(self):
         """Get trading statistics."""
-        cursor = self.db.execute("""
+        db = self._get_db()
+        cursor = db.execute("""
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins,
@@ -157,6 +168,7 @@ class TradeExecutor:
             FROM trades
         """)
         row = cursor.fetchone()
+        db.close()
         return {
             "total_trades": row[0],
             "wins": row[1] or 0,
