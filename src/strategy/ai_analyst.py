@@ -86,6 +86,11 @@ class AIAnalyst:
             )
 
             result_text = response.content[0].text.strip()
+            # Strip markdown code blocks if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+                if result_text.endswith("```"):
+                    result_text = result_text[:-3].strip()
             result = json.loads(result_text)
 
             signal = result.get("signal", "HOLD").upper()
