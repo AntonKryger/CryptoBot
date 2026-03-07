@@ -100,22 +100,48 @@ class CryptoBot:
                 time.sleep(10)
 
     def _scan_cycle(self):
-        """Scan all coins for trading signals."""
+        """Scan all coins for trading signals. Two-pass system:
+        Pass 1: Analyze all coins, collect signals
+        Pass 2: Allocate capital by confidence, execute trades
+        """
         logger.info(f"Scanner {len(self.coins)} coins...")
 
         # Check kill switch
         balance = self.client.get_account_balance()
-        if balance:
-            killed, reason = self.risk.check_kill_switch(balance["balance"])
-            if killed:
-                self.notifier.notify_kill_switch(reason)
-                self.executor.close_all_positions(reason)
-                self.running = False
-                return
+        if not balance:
+            logger.error("Kunne ikke hente balance")
+            return
+
+        current_balance = balance["balance"]
+        killed, reason = self.risk.check_kill_switch(current_balance)
+        if killed:
+            self.notifier.notify_kill_switch(reason)
+            self.executor.close_all_positions(reason)
+            self.running = False
+            return
+
+        # Check open positions
+        positions = self.client.get_positions()
+        open_positions = positions.get("positions", [])
+        open_epics = {p["market"]["epic"] for p in open_positions}
+
+        can_trade, reason = self.risk.can_open_position(len(open_positions), current_balance, current_balance)
+        if not can_trade:
+            logger.info(f"Kan ikke åbne flere positioner: {reason}")
+            return
+
+        available = balance.get("available", current_balance)
+        logger.info(f"Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
+
+        # ── PASS 1: Analyze all coins, collect trade signals ──
+        trade_signals = []
 
         for epic in self.coins:
             try:
-                # Get price data
+                if epic in open_epics:
+                    logger.info(f"{epic}: Allerede åben position, springer over")
+                    continue
+
                 prices = self.client.get_prices(epic, resolution=self.timeframe)
                 df = self.signals.prepare_dataframe(prices)
 
@@ -123,28 +149,53 @@ class CryptoBot:
                     logger.warning(f"Ingen data for {epic}")
                     continue
 
-                # Get signal (with Reddit sentiment)
                 signal_type, details = self.signals.get_signal(df, epic=epic)
 
                 if signal_type in ("BUY", "SELL"):
-                    current_price = details["close"]
-                    result, error = self.executor.execute_trade(epic, signal_type, details, current_price)
-
-                    if result:
-                        # Use actual values from executor (already calculated there)
-                        size = self.risk.calculate_position_size(balance["balance"], current_price)
-                        stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-                        take_profit = self.risk.calculate_take_profit(current_price, signal_type)
-                        self.notifier.notify_trade(signal_type, epic, size, current_price, stop_loss, take_profit, details)
-                    elif error:
-                        # Only log, don't spam - executor handles cooldown
-                        if "Cooldown" not in error:
-                            logger.info(f"{epic}: Kunne ikke handle - {error}")
+                    strength = details.get("signal_strength", 4)
+                    trade_signals.append((epic, signal_type, strength, details))
+                    logger.info(f"{epic}: {signal_type} (styrke: {strength}) -> til allokering")
                 else:
-                    logger.info(f"{epic}: HOLD ({details.get('reason', 'RSI=' + str(round(details.get('rsi', 0), 1)))})")
+                    logger.info(f"{epic}: HOLD ({details.get('reason', '')[:60]})")
 
             except Exception as e:
                 logger.error(f"Fejl ved scanning af {epic}: {e}")
+
+        # ── PASS 2: Allocate capital and execute trades ──
+        if not trade_signals:
+            logger.info("Ingen trade-signaler denne runde")
+            return
+
+        logger.info(f"{len(trade_signals)} signaler fundet, allokerer kapital...")
+        allocations = self.risk.allocate_capital(trade_signals, available)
+
+        for epic, signal_type, allocated_amount, details in allocations:
+            try:
+                current_price = details["close"]
+                size = self.risk.calculate_position_size(allocated_amount, current_price)
+                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+                take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+
+                cat = self.risk.get_coin_category(epic)
+                logger.info(f"Executing {signal_type} {epic} ({cat}): size={size}, alloc=EUR {allocated_amount:.0f}")
+
+                result = self.client.create_position(
+                    epic=epic,
+                    direction=signal_type,
+                    size=size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                )
+
+                if result:
+                    self.executor._log_trade(epic, signal_type, size, current_price,
+                                             stop_loss, take_profit, result, details)
+                    self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                    self.notifier.notify_trade(signal_type, epic, size, current_price,
+                                               stop_loss, take_profit, details)
+
+            except Exception as e:
+                logger.error(f"Trade execution failed for {epic}: {e}")
 
     def _register_commands(self):
         """Register all Telegram command handlers."""
