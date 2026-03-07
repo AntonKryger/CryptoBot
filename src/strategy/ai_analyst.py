@@ -266,7 +266,9 @@ Dato: {current date/time}
 - Confidence: X/10
 - Begrundelse i 2-3 saetninger
 
-Keep it concise but informative. Max 400 words."""
+Keep it concise but informative. Max 400 words.
+
+IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any other format. Just write the report directly."""
 
         try:
             self._rate_limit()
@@ -276,7 +278,20 @@ Keep it concise but informative. Max 400 words."""
                 system=report_system,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text.strip()
+            text = response.content[0].text.strip()
+            # Strip code blocks if present
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3].strip()
+            # If Claude returned JSON, extract the report field
+            if text.startswith("{"):
+                try:
+                    data = json.loads(text)
+                    text = data.get("report", text)
+                except json.JSONDecodeError:
+                    pass
+            return text
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
             return f"Fejl ved rapport: {e}"
