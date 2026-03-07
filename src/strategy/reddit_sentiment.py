@@ -46,6 +46,8 @@ BEARISH_WORDS = [
 
 SUBREDDITS = ["cryptocurrency", "CryptoMarkets"]
 
+FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1"
+
 
 class RedditSentiment:
     """Fetches and analyzes sentiment from Reddit OAuth + CryptoPanic."""
@@ -71,6 +73,8 @@ class RedditSentiment:
         self.cryptopanic_enabled = bool(self.cryptopanic_key)
 
         self._cache = {}  # {epic: (timestamp, sentiment_data)}
+        self._fng_cache = None  # (timestamp, fng_data)
+        self._fng_cache_minutes = 30  # Fear & Greed updates daily, cache 30 min
         self._last_request = 0
         self._request_delay = 1.5  # seconds between requests
 
@@ -233,6 +237,32 @@ class RedditSentiment:
             "source": post.get("source", {}).get("title", ""),
         }
 
+    # ── Fear & Greed Index ────────────────────────────────────────
+
+    def _fetch_fear_greed(self):
+        """Fetch Bitcoin Fear & Greed Index (free, no API key needed)."""
+        if self._fng_cache:
+            cached_time, cached_data = self._fng_cache
+            age_minutes = (datetime.now() - cached_time).total_seconds() / 60
+            if age_minutes < self._fng_cache_minutes:
+                return cached_data
+
+        try:
+            resp = requests.get(FEAR_GREED_URL, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            fng = data.get("data", [{}])[0]
+            result = {
+                "value": int(fng.get("value", 50)),
+                "label": fng.get("value_classification", "Neutral"),
+            }
+            self._fng_cache = (datetime.now(), result)
+            logger.info(f"Fear & Greed Index: {result['value']} ({result['label']})")
+            return result
+        except Exception as e:
+            logger.error(f"Fear & Greed fetch failed: {e}")
+            return {"value": 50, "label": "Neutral"}
+
     # ── Shared analysis ───────────────────────────────────────────
 
     def _analyze_text(self, text):
@@ -325,6 +355,22 @@ class RedditSentiment:
                         all_titles_bear.append(scored["title"])
                 total_posts += len(posts)
 
+        # ── Fear & Greed Index (always available, free) ──
+        fng = self._fetch_fear_greed()
+        fng_value = fng["value"]  # 0=extreme fear, 100=extreme greed
+
+        # Convert Fear & Greed to bullish/bearish weight
+        # FNG > 50 = greed = bullish, FNG < 50 = fear = bearish
+        if fng_value >= 50:
+            fng_bullish = (fng_value - 50) / 50 * 5  # 0-5 weight
+            fng_bearish = 0
+        else:
+            fng_bullish = 0
+            fng_bearish = (50 - fng_value) / 50 * 5  # 0-5 weight
+
+        total_bullish += fng_bullish
+        total_bearish += fng_bearish
+
         # Calculate score
         total = total_bullish + total_bearish
         if total == 0:
@@ -340,8 +386,10 @@ class RedditSentiment:
             "bearish_weight": round(total_bearish, 1),
             "top_bullish": all_titles_bull[:3],
             "top_bearish": all_titles_bear[:3],
+            "fear_greed": fng,
             "sources": [],
         }
+        result["sources"].append("Fear&Greed")
         if self.cryptopanic_enabled:
             result["sources"].append("CryptoPanic")
         if self.reddit_enabled:
