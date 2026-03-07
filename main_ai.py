@@ -180,12 +180,21 @@ class CryptoBotAI:
 
     def _register_commands(self):
         """Register Telegram command handlers."""
+        # /ai_ prefixed commands
         self.notifier.register_command("/ai_status", self._cmd_status)
         self.notifier.register_command("/ai_trades", self._cmd_trades)
         self.notifier.register_command("/ai_scan", self._cmd_scan)
         self.notifier.register_command("/ai_stop", self._cmd_stop)
         self.notifier.register_command("/ai_help", self._cmd_help)
         self.notifier.register_command("/ai_close", self._cmd_close)
+        # Short versions (this bot has its own Telegram bot)
+        self.notifier.register_command("/start", self._cmd_help)
+        self.notifier.register_command("/help", self._cmd_help)
+        self.notifier.register_command("/status", self._cmd_status)
+        self.notifier.register_command("/trades", self._cmd_trades)
+        self.notifier.register_command("/scan", self._cmd_scan)
+        self.notifier.register_command("/stop", self._cmd_stop)
+        self.notifier.register_command("/close", self._cmd_close)
 
     def _cmd_status(self, args=None):
         balance = self.client.get_account_balance()
