@@ -52,9 +52,10 @@ class CryptoBotAI:
         self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.reporter = Reporter(self.config)
 
-        # Connect watchdog to AI/signals for cycle trading and scale-in
+        # Connect watchdog to AI/signals for cycle trading, scale-in, and cooldown
         self.watchdog.ai_analyst = self.ai
         self.watchdog.signal_engine = self.signals
+        self.watchdog.executor = self.executor
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
 
@@ -176,6 +177,14 @@ class CryptoBotAI:
                     logger.info(f"[AI] {epic}: Allerede åben position, springer over")
                     continue
 
+                # Skip if on cooldown (recently traded or cycle trade pending)
+                if epic in self.executor._recently_traded:
+                    last = self.executor._recently_traded[epic]
+                    elapsed = (datetime.now() - last).total_seconds()
+                    if elapsed < self.executor._trade_cooldown:
+                        logger.info(f"[AI] {epic}: Cooldown ({int(self.executor._trade_cooldown - elapsed)}s)")
+                        continue
+
                 # Get price data
                 prices = self.client.get_prices(epic, resolution=self.timeframe)
                 df = self.signals.prepare_dataframe(prices)
@@ -290,6 +299,9 @@ class CryptoBotAI:
     def _handle_cycle_trade(self, epic, opposite_direction):
         """Called by watchdog when a position closes - check for reversal trade."""
         try:
+            # Set cooldown immediately to prevent scan cycle from also opening
+            self.executor._recently_traded[epic] = datetime.now()
+
             logger.info(f"[Cycle] Analyzing {epic} for {opposite_direction} reversal...")
 
             prices = self.client.get_prices(epic, resolution=self.timeframe)

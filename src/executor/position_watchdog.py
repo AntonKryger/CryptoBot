@@ -66,6 +66,7 @@ class PositionWatchdog:
         # References set by main_ai.py
         self.ai_analyst = None
         self.signal_engine = None
+        self.executor = None  # Set by main_ai.py for cooldown tracking
 
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
@@ -73,6 +74,11 @@ class PositionWatchdog:
             f"trailing={self.trailing_trigger_pct}%@{self.trailing_atr_mult}xATR, "
             f"partial={self.partial_profit_pct}%@{self.partial_close_ratio*100:.0f}%)"
         )
+
+    def _set_cooldown(self, epic):
+        """Set trade cooldown for an epic after watchdog closes a position."""
+        if self.executor:
+            self.executor._recently_traded[epic] = datetime.now()
 
     def update_atr(self, epic, atr_pct):
         """Called by main scan cycle to cache latest ATR for each coin."""
@@ -232,6 +238,7 @@ class PositionWatchdog:
                     f"Drawdown: {drawdown_from_peak_pct:.1f}% > {trailing_distance:.1f}%"
                 )
                 self.client.close_position(deal_id, direction=direction, size=size)
+                self._set_cooldown(epic)
                 self.notifier.send(
                     f"🔒 <b>Trailing stop: {epic}</b>\n"
                     f"Peak: {peak:.4f} | Lukket: {current_price:.4f}\n"
@@ -273,6 +280,7 @@ class PositionWatchdog:
                 f"Hold: {hold_hours:.1f}h > {max_hours}h, P/L: {pl_pct:+.1f}%"
             )
             self.client.close_position(deal_id, direction=direction, size=size)
+            self._set_cooldown(epic)
             self.notifier.send(
                 f"⏰ <b>Max holdtid ({status}): {epic}</b>\n"
                 f"Holdtid: {hold_hours:.1f} timer (max: {max_hours}h)\n"
@@ -354,6 +362,7 @@ class PositionWatchdog:
         elif len(adverse_candles) >= 4:
             try:
                 self.client.close_position(deal_id, direction=direction, size=size)
+                self._set_cooldown(epic)
                 logger.warning(
                     f"WATCHDOG: Full early exit {epic} - {len(adverse_candles)} accelerating adverse candles"
                 )

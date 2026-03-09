@@ -17,6 +17,7 @@ class TradeExecutor:
         # Local tracking to prevent duplicate trades (API has delay)
         self._recently_traded = {}  # {epic: timestamp}
         self._trade_cooldown = 300  # 5 minutes cooldown per coin
+        self._breakeven_done = set()  # deal_ids where break-even stop already set
 
         self.db_path = config.get("database", {}).get("path", "data/trades.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -154,16 +155,25 @@ class TradeExecutor:
         """Check and update trailing stops for open positions."""
         positions = self.client.get_positions()
 
+        # Clean up tracking for closed positions
+        active_ids = {p["position"]["dealId"] for p in positions.get("positions", [])}
+        closed = self._breakeven_done - active_ids
+        self._breakeven_done -= closed
+
         for pos in positions.get("positions", []):
             deal_id = pos["position"]["dealId"]
             direction = pos["position"]["direction"]
             entry_price = pos["position"]["level"]
             current_price = pos["market"]["bid"] if direction == "BUY" else pos["market"]["offer"]
 
+            # Skip if break-even already set for this position
+            if deal_id in self._breakeven_done:
+                continue
+
             if self.risk.should_move_trailing_stop(entry_price, current_price, direction):
-                # Move stop-loss to break-even
                 try:
-                    self.client.update_position(deal_id, stop_loss=entry_price)
+                    self.client.update_position(deal_id, stop_loss=round(entry_price, 5))
+                    self._breakeven_done.add(deal_id)
                     logger.info(f"Trailing stop moved to break-even for {deal_id} ({pos['market']['epic']})")
                 except Exception as e:
                     logger.warning(f"Failed to update trailing stop: {e}")

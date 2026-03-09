@@ -154,6 +154,14 @@ class CryptoBot:
                     logger.info(f"{epic}: Allerede åben position, springer over")
                     continue
 
+                # Skip if on cooldown
+                if epic in self.executor._recently_traded:
+                    last = self.executor._recently_traded[epic]
+                    elapsed = (__import__('datetime').datetime.now() - last).total_seconds()
+                    if elapsed < self.executor._trade_cooldown:
+                        logger.info(f"{epic}: Cooldown ({int(self.executor._trade_cooldown - elapsed)}s)")
+                        continue
+
                 prices = self.client.get_prices(epic, resolution=self.timeframe)
                 df = self.signals.prepare_dataframe(prices)
 
