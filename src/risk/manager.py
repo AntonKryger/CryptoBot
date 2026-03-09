@@ -228,12 +228,28 @@ class RiskManager:
         )
         return round(sl, 5)
 
-    def calculate_take_profit(self, entry_price, direction):
-        """Calculate take-profit price."""
+    def calculate_take_profit(self, entry_price, direction, atr_pct=0):
+        """Calculate take-profit price.
+
+        Grid-inspired: Use 1.5×ATR for TP (typically 3-5%) instead of fixed 7%.
+        This gives realistic, achievable targets that get hit regularly.
+        Falls back to fixed TP if ATR not available.
+        """
+        if atr_pct > 0:
+            # Grid-style TP: 1.5× ATR, clamped to [1.5%, 6.0%]
+            raw_tp_pct = atr_pct * 1.5
+            tp_pct = max(1.5, min(6.0, raw_tp_pct))
+            logger.info(
+                f"ATR TP: atr={atr_pct:.2f}% × 1.5 = {raw_tp_pct:.2f}% -> "
+                f"clamped to {tp_pct:.2f}%"
+            )
+        else:
+            tp_pct = self.take_profit_pct
+
         if direction == "BUY":
-            return round(entry_price * (1 + self.take_profit_pct / 100), 2)
+            return round(entry_price * (1 + tp_pct / 100), 5)
         else:  # SELL (short)
-            return round(entry_price * (1 - self.take_profit_pct / 100), 2)
+            return round(entry_price * (1 - tp_pct / 100), 5)
 
     def should_move_trailing_stop(self, entry_price, current_price, direction):
         """Check if trailing stop should be moved to break-even."""

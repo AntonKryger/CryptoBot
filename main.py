@@ -49,6 +49,7 @@ class CryptoBot:
         self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.watchdog.executor = self.executor  # For cooldown tracking
         self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
+        self.watchdog._cycle_callback = self._handle_cycle_trade  # Grid-style cycle trading
         self.reporter = Reporter(self.config)
 
         self.coins = self.config.get("trading", {}).get("coins", [])
@@ -213,7 +214,7 @@ class CryptoBot:
                     stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
                 else:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-                take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+                take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
 
                 cat = self.risk.get_coin_category(epic)
                 logger.info(f"Executing {signal_type} {epic} ({cat}): size={size}, alloc=EUR {allocated_amount:.0f}")
@@ -235,6 +236,70 @@ class CryptoBot:
 
             except Exception as e:
                 logger.error(f"Trade execution failed for {epic}: {e}")
+
+    def _handle_cycle_trade(self, epic, suggested_direction):
+        """Grid-style cycle trading: after watchdog closes a position, check for reversal.
+        Runs signal analysis and opens opposite direction if signal is strong enough."""
+        try:
+            prices = self.client.get_prices(epic, resolution=self.timeframe)
+            df = self.signals.prepare_dataframe(prices)
+            if df is None:
+                return
+
+            signal_type, details = self.signals.get_signal(df, epic=epic)
+
+            # Only enter if signal matches suggested direction and is strong enough
+            if signal_type != suggested_direction:
+                logger.info(f"[Cycle] {epic}: Signal is {signal_type}, not {suggested_direction} — skip")
+                return
+
+            strength = details.get("signal_strength", 0)
+            if strength < 5:  # Need at least moderate signal
+                logger.info(f"[Cycle] {epic}: Signal too weak ({strength}) — skip")
+                return
+
+            confidence = self.risk.map_rule_score_to_confidence(strength)
+
+            # Get available capital
+            balance = self.client.get_account_balance()
+            if not balance:
+                return
+            available = balance.get("available", 0)
+            allocated = available * 0.10  # 10% for cycle trades (conservative)
+
+            current_price = details["close"]
+            size = self.risk.calculate_position_size(allocated, current_price)
+            atr_pct = details.get("atr_pct", 0)
+
+            if atr_pct > 0:
+                stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
+            else:
+                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+            take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
+
+            result = self.client.create_position(
+                epic=epic, direction=signal_type, size=size,
+                stop_loss=stop_loss, take_profit=take_profit,
+            )
+
+            if result:
+                self.executor._log_trade(epic, signal_type, size, current_price,
+                                         stop_loss, take_profit, result, details)
+                self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                deal_id = result.get("dealReference") or result.get("dealId", "")
+                self.watchdog.track_entry(deal_id, epic)
+
+                self.notifier.send(
+                    f"🔄 <b>Cycle trade: {epic}</b>\n"
+                    f"{'🟢 LONG' if signal_type == 'BUY' else '🔴 SHORT'}\n"
+                    f"Signal styrke: {strength} (conf: {confidence})\n"
+                    f"Pris: EUR {current_price:.4f}\n"
+                    f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}"
+                )
+                logger.info(f"[Cycle] {epic}: {signal_type} executed (strength={strength})")
+
+        except Exception as e:
+            logger.error(f"[Cycle] Error for {epic}: {e}")
 
     def _register_commands(self):
         """Register all Telegram command handlers."""

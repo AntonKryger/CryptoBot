@@ -266,7 +266,7 @@ class CryptoBotAI:
                     stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
                 else:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-                take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+                take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
 
                 cat = self.risk.get_coin_category(epic)
                 logger.info(
@@ -357,7 +357,7 @@ class CryptoBotAI:
                 stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
             else:
                 stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-            take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+            take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
 
             result = self.client.create_position(
                 epic=epic, direction=signal_type, size=size,
@@ -415,7 +415,7 @@ class CryptoBotAI:
                 stop_loss = self.risk.calculate_atr_stop_loss(current_price, direction, atr_pct)
             else:
                 stop_loss = self.risk.calculate_stop_loss(current_price, direction)
-            take_profit = self.risk.calculate_take_profit(current_price, direction)
+            take_profit = self.risk.calculate_take_profit(current_price, direction, atr_pct)
 
             result = self.client.create_position(
                 epic=epic, direction=direction, size=scale_size,
