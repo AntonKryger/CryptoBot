@@ -36,6 +36,14 @@ IMPORTANT RULES:
 - When you and the rule-based bot agree, increase your confidence by 1-2 points
 - Confidence 5+ means you see a valid setup. Confidence 7+ means strong conviction.
 
+ENTRY QUALITY RULES:
+- Do NOT enter a trade just because an indicator is slightly oversold/overbought. Wait for CONFIRMATION (bounce candle, engulfing pattern, or volume spike).
+- Avoid entries when momentum (ROC 3/6 candles) is strongly moving AGAINST your trade direction.
+- If the last 3 candles are strongly bearish, do NOT BUY even if RSI is oversold — wait for a reversal candle.
+- If the last 3 candles are strongly bullish, do NOT SELL even if RSI is overbought — wait for a rejection candle.
+- Confidence 6 = decent setup with 2 confirmations. Confidence 7-8 = strong setup. Confidence 9-10 = exceptional, multiple strong confirmations.
+- Give confidence 5 or below (which means HOLD) when setups are marginal or conflicting.
+
 MARKET REGIME RULES:
 - RANGING regime: Mean-reversion is optimal. Trade with confidence.
 - TRENDING_UP regime: Favor BUY signals. SELL signals need stronger conviction.
@@ -46,6 +54,7 @@ SHORT-SIDE RULES:
 - Shorts require stronger conviction. Only short with 3+ technical indicators confirming.
 - MACD bearish divergence, volume climax on red candle, and failed breakout are strong short confirmations.
 - Only short in RANGING or TRENDING_DOWN regimes.
+- Do NOT short a coin that just bounced off support or shows a bullish engulfing pattern.
 
 Respond ONLY with valid JSON in this exact format:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -67,6 +76,7 @@ class AIAnalyst:
         self.client = anthropic.Anthropic(api_key=self.api_key)
         self._last_request = 0
         self._request_delay = 1.0  # seconds between API calls
+        self.trade_executor = None  # Set by main_ai.py for recent P/L feedback
 
         logger.info(f"AI Analyst initialized (model: {self.model}, min_confidence: {self.min_confidence})")
 
@@ -316,6 +326,27 @@ RULE-BASED BOT SIGNAL:
 - Score: {rs_score}/9 (needs 4+ to trigger)
 - Reasons: {', '.join(rs_reasons[:5]) if rs_reasons else 'None'}
 - Note: This is the technical scoring system's conclusion. If it agrees with your analysis, you can be more confident. If it disagrees, explain why you see it differently."""
+
+        # Add recent trade performance for this epic (feedback loop)
+        if self.trade_executor:
+            try:
+                recent = self.trade_executor.get_trade_history(limit=10)
+                epic_trades = [t for t in recent if t["epic"] == epic]
+                if epic_trades:
+                    prompt += f"\n\nRECENT TRADE HISTORY FOR {epic} (learn from past decisions):\n"
+                    for t in epic_trades[:3]:  # last 3 trades for this coin
+                        pl = t.get("profit_loss")
+                        pl_str = f"P/L: EUR {pl:+.2f}" if pl is not None else "P/L: unknown (still open?)"
+                        prompt += f"  - {t['direction']} @ {t['entry_price']:.4f} | {pl_str} | {t['status']}\n"
+
+                    wins = sum(1 for t in epic_trades if (t.get("profit_loss") or 0) > 0)
+                    losses = sum(1 for t in epic_trades if (t.get("profit_loss") or 0) < 0)
+                    if wins + losses > 0:
+                        prompt += f"  Win/Loss: {wins}W / {losses}L\n"
+                        if losses > wins:
+                            prompt += "  ⚠ More losses than wins on this coin recently. Be more selective.\n"
+            except Exception:
+                pass
 
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt

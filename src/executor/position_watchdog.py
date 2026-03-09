@@ -297,6 +297,13 @@ class PositionWatchdog:
 
     def _check_early_exit(self, deal_id, epic, direction, size, pl_pct):
         """Detect momentum acceleration with adverse candles and exit early."""
+        # Grace period: don't trigger early exit on positions opened less than 15 minutes ago
+        entry_time = self._entry_times.get(deal_id)
+        if entry_time:
+            age_minutes = (datetime.now() - entry_time).total_seconds() / 60
+            if age_minutes < 15:
+                return False  # Too young, let the position breathe
+
         # Only check every 5 minutes (cache-based)
         candle_data = self._candle_cache.get(epic)
         if candle_data and (time.time() - candle_data["timestamp"]) < self._candle_cache_ttl:
@@ -339,8 +346,9 @@ class PositionWatchdog:
         if not accelerating:
             return False  # Decelerating - hold
 
-        # 3 adverse candles + acceleration + P/L > -2%: close 50%
-        if len(adverse_candles) == 3 and pl_pct > -2.0:
+        # 3 adverse candles + acceleration + P/L between -1% and -3%: close 50%
+        # Don't trigger if P/L is barely negative (< -1%) — let the position breathe
+        if len(adverse_candles) == 3 and -3.0 < pl_pct <= -1.0:
             partial_size = round(size * 0.5, 4)
             if partial_size > 0 and deal_id not in self._partial_taken:
                 try:

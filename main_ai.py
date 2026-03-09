@@ -56,6 +56,8 @@ class CryptoBotAI:
         self.watchdog.ai_analyst = self.ai
         self.watchdog.signal_engine = self.signals
         self.watchdog.executor = self.executor
+        # Give AI access to trade history for feedback loop
+        self.ai.trade_executor = self.executor
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
 
