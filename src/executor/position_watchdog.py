@@ -63,6 +63,10 @@ class PositionWatchdog:
         self.progressive_sl_trigger = watchdog_cfg.get("progressive_sl_trigger_pct", 2.0)
         self.progressive_sl_trail = watchdog_cfg.get("progressive_sl_trail_pct", 1.0)
 
+        # Profit pullback close - actively close when giving back profit
+        self.pullback_peak_trigger = watchdog_cfg.get("pullback_peak_trigger_pct", 1.5)
+        self.pullback_close_pct = watchdog_cfg.get("pullback_close_pct", 0.75)
+
         # Scale-in state
         self._scale_in_done = set()    # deal_ids that already got scale-in
         self._entry_confidence = {}    # {deal_id: confidence} - confidence at entry
@@ -77,8 +81,7 @@ class PositionWatchdog:
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
             f"breakeven={self.breakeven_trigger_pct}%, "
-            f"progressive_trail={self.progressive_sl_trigger}%+{self.progressive_sl_trail}%trail, "
-            f"trailing={self.trailing_trigger_pct}%@{self.trailing_atr_mult}xATR, "
+            f"pullback_close=peak>{self.pullback_peak_trigger}%+drop>{self.pullback_close_pct}%, "
             f"partial={self.partial_profit_pct}%@{self.partial_close_ratio*100:.0f}%)"
         )
 
@@ -224,6 +227,29 @@ class PositionWatchdog:
         # This locks in profit on Capital.com's server (survives bot crash)
         if deal_id in self._breakeven_set and pl_pct >= self.progressive_sl_trigger:
             self._update_progressive_sl(deal_id, epic, direction, entry_price, current_price, pl_pct, pos)
+
+        # ── Rule 3c: PROFIT PULLBACK CLOSE ──
+        # If position peaked at >= 1.5% and has dropped 0.75% from peak → CLOSE NOW
+        # This is the active profit-taking that prevents giving back gains
+        if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= self.pullback_close_pct:
+            try:
+                logger.warning(
+                    f"WATCHDOG: PROFIT PULLBACK closing {epic}! "
+                    f"Peak P/L: +{peak_profit_pct:.1f}%, Now: +{pl_pct:.1f}%, "
+                    f"Gave back: {drawdown_from_peak_pct:.2f}% from peak"
+                )
+                self.client.close_position(deal_id, direction=direction, size=size)
+                self._set_cooldown(epic)
+                self.notifier.send(
+                    f"💰 <b>Profit taget: {epic}</b>\n"
+                    f"Peak: +{peak_profit_pct:.1f}% | Lukket: +{pl_pct:.1f}%\n"
+                    f"Pullback fra top: {drawdown_from_peak_pct:.2f}%\n"
+                    f"Beskyttede profit i stedet for at vente"
+                )
+                self._trigger_cycle_trade(epic, direction, pl_pct)
+                return  # Position closed
+            except Exception as e:
+                logger.error(f"Watchdog: Profit pullback close failed for {epic}: {e}")
 
         # ── Rule 4: Partial profit-taking ──
         if deal_id not in self._partial_taken and pl_pct >= self.partial_profit_pct:
