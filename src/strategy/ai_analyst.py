@@ -262,6 +262,20 @@ MARKET REGIME: {regime} (ADX: {adx:.1f})
         else:
             prompt += "\nMARKET REGIME: Not available\n"
 
+        # Add time-of-day bias if available in details
+        time_bias = None
+        time_bias_return = 0
+        # Extract from latest row if present (passed through details)
+        if regime_data:
+            time_bias = regime_data.get("time_bias")
+            time_bias_return = regime_data.get("time_bias_return", 0)
+        if time_bias:
+            prompt += (
+                f"\nTIME-OF-DAY BIAS: {time_bias} (avg return this hour: {time_bias_return:+.3f}%)\n"
+                f"- Based on 7-day hourly return analysis. "
+                f"{'Historically bullish hour - favor BUY.' if time_bias == 'BULLISH' else 'Historically bearish hour - favor SELL.' if time_bias == 'BEARISH' else 'No clear hourly pattern.'}\n"
+            )
+
         # Add sentiment if available
         has_sentiment = sentiment_data and (
             sentiment_data.get("total_posts", 0) > 0 or sentiment_data.get("fear_greed")

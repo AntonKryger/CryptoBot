@@ -14,6 +14,7 @@ from src.api.capital_client import CapitalClient
 from src.strategy.signals import SignalEngine
 from src.strategy.ai_analyst import AIAnalyst
 from src.strategy.regime_detector import RegimeDetector
+from src.strategy.time_bias import TimeBias
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
@@ -42,7 +43,9 @@ class CryptoBotAI:
         self.signals = SignalEngine(self.config)  # reuse for indicators + sentiment
         self.ai = AIAnalyst(self.config)
         self.regime = RegimeDetector(self.client, self.config)
-        self.signals.regime_detector = self.regime  # connect regime to signals
+        self.time_bias = TimeBias(self.client)
+        self.signals.regime_detector = self.regime
+        self.signals.time_bias = self.time_bias
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
@@ -188,9 +191,13 @@ class CryptoBotAI:
                 latest_atr = df.iloc[-1].get("atr_pct", 2.0)
                 self.watchdog.update_atr(epic, latest_atr)
 
-                # Get regime
+                # Get regime and time bias
                 regime, adx = self.regime.get_regime(epic)
-                regime_data = {"regime": regime, "adx": adx}
+                time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+                regime_data = {
+                    "regime": regime, "adx": adx,
+                    "time_bias": time_bias_label, "time_bias_return": time_bias_return,
+                }
 
                 # Get sentiment data
                 sentiment_data = None
@@ -547,9 +554,13 @@ class CryptoBotAI:
                 except Exception:
                     pass
 
-                # Get regime
+                # Get regime and time bias
                 regime, adx = self.regime.get_regime(epic)
-                regime_data = {"regime": regime, "adx": adx}
+                time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+                regime_data = {
+                    "regime": regime, "adx": adx,
+                    "time_bias": time_bias_label, "time_bias_return": time_bias_return,
+                }
 
                 # Get rule-based signal
                 rule_sig, rule_det = self.signals.get_signal(df, epic=epic)
@@ -641,6 +652,17 @@ class CryptoBotAI:
                 msg += f"  {emoji} {epic}: {regime} (ADX: {adx:.1f})\n"
         else:
             msg += "  Ingen data endnu\n"
+
+        # Time-of-day bias
+        from datetime import datetime as _dt
+        msg += f"\n<b>Time-of-day bias (UTC {_dt.utcnow().hour:02d}:00):</b>\n"
+        biases = self.time_bias.get_all_biases()
+        if biases:
+            for epic, data in sorted(biases.items()):
+                bias_emoji = "🟢" if data["bias"] == "BULLISH" else "🔴" if data["bias"] == "BEARISH" else "⚪"
+                msg += f"  {bias_emoji} {epic}: {data['bias']} ({data['avg_return']})\n"
+        else:
+            msg += "  Beregnes ved foerste scan\n"
 
         # ATR per coin
         msg += "\n<b>ATR per coin:</b>\n"

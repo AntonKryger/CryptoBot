@@ -28,8 +28,9 @@ class SignalEngine:
         from src.strategy.reddit_sentiment import RedditSentiment
         self.reddit = RedditSentiment(config)
 
-        # Regime detector (set externally by main.py / main_ai.py)
+        # Regime detector and time bias (set externally by main.py / main_ai.py)
         self.regime_detector = None
+        self.time_bias = None
 
     def prepare_dataframe(self, prices_data):
         """Convert Capital.com price data to a pandas DataFrame."""
@@ -273,6 +274,15 @@ class SignalEngine:
             except Exception as e:
                 logger.warning(f"Regime detection failed for {epic}: {e}")
 
+        # Get time-of-day bias
+        time_bias_label = None
+        time_bias_return = 0.0
+        if self.time_bias and epic:
+            try:
+                time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+            except Exception as e:
+                logger.warning(f"Time bias failed for {epic}: {e}")
+
         df = self.calculate_indicators(df)
         latest = df.iloc[-1]
 
@@ -295,6 +305,8 @@ class SignalEngine:
             "sentiment": sentiment_data,
             "regime": regime,
             "adx": adx,
+            "time_bias": time_bias_label,
+            "time_bias_return": time_bias_return,
         }
 
         # ── Check if there's a tradeable range ──
@@ -381,6 +393,13 @@ class SignalEngine:
                 if regime_adj != 0:
                     score += regime_adj
                     reasons.append(f"Regime {regime} ({regime_adj:+d})")
+
+            # 11. Time-of-day bias
+            if self.time_bias and epic:
+                time_adj = self.time_bias.get_signal_adjustment(epic, "BUY")
+                if time_adj != 0:
+                    score += time_adj
+                    reasons.append(f"Time bias {time_bias_label} ({time_adj:+d}, avg {time_bias_return:+.3f}%)")
 
             details["buy_score"] = score
             details["buy_reasons"] = reasons
@@ -481,6 +500,13 @@ class SignalEngine:
                 if regime_adj != 0:
                     score += regime_adj
                     reasons.append(f"Regime {regime} ({regime_adj:+d})")
+
+            # 12. Time-of-day bias
+            if self.time_bias and epic:
+                time_adj = self.time_bias.get_signal_adjustment(epic, "SELL")
+                if time_adj != 0:
+                    score += time_adj
+                    reasons.append(f"Time bias {time_bias_label} ({time_adj:+d}, avg {time_bias_return:+.3f}%)")
 
             details["sell_score"] = score
             details["sell_reasons"] = reasons

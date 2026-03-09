@@ -12,6 +12,7 @@ from src.config import load_config
 from src.api.capital_client import CapitalClient
 from src.strategy.signals import SignalEngine
 from src.strategy.regime_detector import RegimeDetector
+from src.strategy.time_bias import TimeBias
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.notifications.telegram_bot import TelegramNotifier
@@ -38,7 +39,9 @@ class CryptoBot:
         self.client = CapitalClient(self.config)
         self.signals = SignalEngine(self.config)
         self.regime = RegimeDetector(self.client, self.config)
-        self.signals.regime_detector = self.regime  # connect regime to signals
+        self.time_bias = TimeBias(self.client)
+        self.signals.regime_detector = self.regime
+        self.signals.time_bias = self.time_bias
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
