@@ -5,10 +5,10 @@ logger = logging.getLogger(__name__)
 
 
 class SignalEngine:
-    """Range-trading signal engine that detects swing highs/lows and trades
-    mean-reversion patterns. Buys near support, shorts near resistance.
-    Includes Reddit sentiment analysis as additional signal layer.
-    Integrates regime detection for signal adjustment."""
+    """Trend-following signal engine with mean-reversion in ranging markets.
+    Primary: trade WITH the trend (strongest documented edge in crypto).
+    Secondary: mean-reversion at extremes only when regime is RANGING.
+    Includes Reddit sentiment and regime detection."""
 
     def __init__(self, config):
         signals_cfg = config.get("signals", {})
@@ -19,7 +19,7 @@ class SignalEngine:
         self.rsi_oversold = signals_cfg.get("rsi_oversold", 30)
         self.volume_multiplier = signals_cfg.get("volume_multiplier", 1.5)
         self.atr_period = signals_cfg.get("atr_period", 14)
-        self.range_period = signals_cfg.get("range_period", 96)  # 96 x 15min = 24 hours
+        self.range_period = signals_cfg.get("range_period", 24)  # 24 x 1H = 24 hours
         self.buy_zone_pct = signals_cfg.get("buy_zone_pct", 20)  # bottom 20% of range
         self.sell_zone_pct = signals_cfg.get("sell_zone_pct", 80)  # top 80%+ of range
         self.min_range_pct = signals_cfg.get("min_range_pct", 3.0)  # min range to trade
@@ -322,6 +322,9 @@ class SignalEngine:
             "NEUTRAL"
         )
 
+        # ── Trend alignment (EMA 21) ──
+        ema_trend_bullish = latest["ema_bullish"]  # ema_fast > ema_slow
+
         # ── BUY SIGNAL: Price near bottom of range ──
         if range_pos <= self.buy_zone_pct:
             score = 0
@@ -330,6 +333,14 @@ class SignalEngine:
             # 1. In buy zone (bottom of range)
             score += 1
             reasons.append(f"Buy zone (range pos: {range_pos:.0f}%)")
+
+            # TREND FILTER: Trading against trend gets penalized (unless ranging)
+            if ema_trend_bullish:
+                score += 1
+                reasons.append("Trend-aligned (EMA bullish)")
+            elif regime != "RANGING":
+                score -= 2
+                reasons.append("COUNTER-TREND penalty (EMA bearish, -2)")
 
             # 2. RSI oversold or approaching
             if latest["rsi"] < self.rsi_oversold:
@@ -431,6 +442,14 @@ class SignalEngine:
             # 1. In sell zone (top of range)
             score += 1
             reasons.append(f"Sell zone (range pos: {range_pos:.0f}%)")
+
+            # TREND FILTER: Trading against trend gets penalized (unless ranging)
+            if not ema_trend_bullish:
+                score += 1
+                reasons.append("Trend-aligned (EMA bearish)")
+            elif regime != "RANGING":
+                score -= 2
+                reasons.append("COUNTER-TREND penalty (EMA bullish, -2)")
 
             # 2. RSI overbought or approaching
             if latest["rsi"] > self.rsi_overbought:
