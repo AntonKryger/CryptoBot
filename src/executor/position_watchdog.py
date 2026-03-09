@@ -137,6 +137,10 @@ class PositionWatchdog:
         for pos in open_positions:
             self._evaluate_position(pos)
 
+        # Periodic status log every ~5 min (25 iterations x 12s)
+        if self._iteration_count % 25 == 0 and open_positions:
+            self._log_status_summary(open_positions)
+
         # Periodic: scale-in check every ~10 min (50 iterations x 12s)
         if self._iteration_count % 50 == 0 and self._scale_in_callback:
             self._check_scale_in(open_positions)
@@ -509,6 +513,40 @@ class PositionWatchdog:
     def mark_scale_in_done(self, deal_id):
         """Mark that a scale-in was already done for this position."""
         self._scale_in_done.add(deal_id)
+
+    def _log_status_summary(self, open_positions):
+        """Log a periodic summary so we can verify the watchdog is alive and evaluating."""
+        summaries = []
+        worst_pl = 0
+        for pos in open_positions:
+            epic = pos["market"]["epic"]
+            direction = pos["position"]["direction"]
+            entry_price = pos["position"]["level"]
+            current_price = pos["market"]["bid"] if direction == "BUY" else pos["market"]["offer"]
+            sl = pos["position"].get("stopLevel")
+            tp = pos["position"].get("profitLevel")
+
+            if direction == "BUY":
+                pl_pct = (current_price - entry_price) / entry_price * 100
+            else:
+                pl_pct = (entry_price - current_price) / entry_price * 100
+
+            worst_pl = min(worst_pl, pl_pct)
+
+            sl_str = f"SL:{sl:.4f}" if sl else "NO SL!"
+            be_str = " [BE]" if pos["position"]["dealId"] in self._breakeven_set else ""
+            summaries.append(f"{epic}:{pl_pct:+.1f}%{be_str} {sl_str}")
+
+            # ALERT: Position without stop loss
+            if not sl:
+                logger.warning(f"WATCHDOG ALERT: {epic} has NO STOP LOSS! deal={pos['position']['dealId']}")
+
+        summary_line = " | ".join(summaries)
+        logger.info(
+            f"WATCHDOG alive (iter={self._iteration_count}): {len(open_positions)} pos | "
+            f"worst={worst_pl:+.1f}% | BE={len(self._breakeven_set)} | "
+            f"partial={len(self._partial_taken)} | {summary_line}"
+        )
 
     def get_status(self):
         """Get watchdog status for /status command."""
