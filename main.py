@@ -48,6 +48,7 @@ class CryptoBot:
         self.notifier = TelegramNotifier(self.config)
         self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.watchdog.executor = self.executor  # For cooldown tracking
+        self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
         self.reporter = Reporter(self.config)
 
         self.coins = self.config.get("trading", {}).get("coins", [])

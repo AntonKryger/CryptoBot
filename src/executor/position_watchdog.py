@@ -63,10 +63,11 @@ class PositionWatchdog:
         self._entry_confidence = {}    # {deal_id: confidence} - confidence at entry
         self._scale_in_callback = None # Set by main_ai.py for re-evaluation
 
-        # References set by main_ai.py
+        # References set by main*.py
         self.ai_analyst = None
         self.signal_engine = None
-        self.executor = None  # Set by main_ai.py for cooldown tracking
+        self.executor = None  # For cooldown tracking
+        self.time_bias = None  # For sentiment-based night mode
 
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
@@ -253,6 +254,55 @@ class PositionWatchdog:
                 self._trigger_cycle_trade(epic, direction, pl_pct)
             except Exception as e:
                 logger.error(f"Watchdog: Trailing close failed for {epic}: {e}")
+
+        # ── Rule 7: Sentiment-based close (bearish hour + profitable long, or bullish hour + profitable short) ──
+        if self.time_bias and pl_pct >= 0.5:
+            self._check_sentiment_close(deal_id, epic, direction, size, pl_pct)
+
+    def _check_sentiment_close(self, deal_id, epic, direction, size, pl_pct):
+        """Close profitable positions when time-of-day bias goes against them.
+        Frees capital for the opposite direction in the next scan cycle."""
+        try:
+            bias, avg_return, _ = self.time_bias.get_bias(epic)
+        except Exception:
+            return
+
+        # Only act on strong bias (not NEUTRAL)
+        if bias == "NEUTRAL":
+            return
+
+        # Bearish hour + we're long and profitable → close to protect profit
+        should_close = False
+        if bias == "BEARISH" and direction == "BUY" and pl_pct >= 0.5:
+            should_close = True
+        elif bias == "BULLISH" and direction == "SELL" and pl_pct >= 0.5:
+            should_close = True
+
+        if not should_close:
+            return
+
+        # Only check every ~5 min per position (avoid repeated attempts)
+        # Use iteration count - only on multiples of 25
+        if self._iteration_count % 25 != 0:
+            return
+
+        try:
+            opposite = "short" if direction == "BUY" else "long"
+            logger.info(
+                f"WATCHDOG: Sentiment close {epic} — {bias} hour (avg {avg_return:+.3f}%), "
+                f"closing profitable {direction} (+{pl_pct:.1f}%) to free capital for {opposite}"
+            )
+            self.client.close_position(deal_id, direction=direction, size=size)
+            self._set_cooldown(epic)
+            self.notifier.send(
+                f"🌙 <b>Sentiment close: {epic}</b>\n"
+                f"Time bias: {bias} (avg return: {avg_return:+.3f}%)\n"
+                f"Lukkede {direction} med +{pl_pct:.1f}% profit\n"
+                f"Frigiver kapital til {'SHORT' if direction == 'BUY' else 'LONG'}"
+            )
+            self._trigger_cycle_trade(epic, direction, pl_pct)
+        except Exception as e:
+            logger.error(f"Watchdog: Sentiment close failed for {epic}: {e}")
 
     def _check_max_hold_time(self, deal_id, epic, direction, size, pl_pct):
         """Close position if max hold time exceeded AND position is losing or breakeven.

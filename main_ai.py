@@ -56,6 +56,7 @@ class CryptoBotAI:
         self.watchdog.ai_analyst = self.ai
         self.watchdog.signal_engine = self.signals
         self.watchdog.executor = self.executor
+        self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
         # Give AI access to trade history for feedback loop
         self.ai.trade_executor = self.executor
         self.watchdog._cycle_callback = self._handle_cycle_trade
