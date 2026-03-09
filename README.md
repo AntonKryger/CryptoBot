@@ -64,7 +64,7 @@ Akademisk forskning viser at simpel trend-following er den bedst dokumenterede s
 | Config | `config.yaml` | `config_ai.yaml` |
 | Beslutning | Score-system (min 4/9) | Claude Haiku (min 6/10) |
 | Konto | "Crypto bot" (default) | "CryptoBot AI" |
-| Watchdog | Enkel trailing stop | 7-regel watchdog (12 sek.) |
+| Watchdog | Fuld watchdog (9 regler, 12 sek.) | Fuld watchdog (9 regler, 12 sek.) |
 | Rapport | Nej | Ja (`/report BTCUSD`) |
 | AI Debug | Nej | Ja (`/debug`) |
 | Docker | `cryptobot` container | `cryptobot-ai` container |
@@ -187,10 +187,13 @@ Baggrundstraad der tjekker positioner hver 12. sekund. 7 regler:
 | 1 | **Max holdtid** | Major: 24h, altcoin: 8h, memecoin: 4h. Lukker KUN tabere/breakeven — vindere haandteres af trailing stop |
 | 2 | **Early exit** | 3+ accelererende modsat-candles → luk 50%. 4+ → luk 100%. Grace period: 15 min (nye positioner faar tid) |
 | 3 | **Break-even** | Flyt SL til entry ved +1.5% profit (server-side paa Capital.com) |
+| 3b | **Progressive SL** | Efter break-even: SL trails 1.0% bag nuvaerende pris. Opdateres server-side paa Capital.com naar SL rykker >= 0.3%. Overvaager botten crasher |
+| 3c | **Profit pullback close** | Hvis peak P/L >= 1.5% OG pris falder 0.75% fra peak → LUK STRAKS. Den vigtigste profit-beskyttelse |
 | 4 | **Delvis profit** | Luk 50% ved +4% profit, resten koerer med trailing |
 | 5 | **Dynamisk TP** | Naar pris er inden for 1% af TP + positiv momentum: flyt TP op med 1.5x ATR (max 2 udvidelser) |
 | 6 | **Trailing stop** | Aktiv ved +2.5% profit. Lukker naar pris falder 1.5x ATR fra peak |
-| 7 | **Cycle trading** | Ved positionslukning: AI re-analyserer for modsat retning. Aabner hvis confidence >= 7 (30 min cooldown) |
+| 7 | **Sentiment close** | Bearish time-of-day bias + profitable long → luk. Bullish bias + profitable short → luk. Baseret paa 7-dages historiske timereturns |
+| 8 | **Cycle trading** | Ved positionslukning: re-analyserer for modsat retning. Begge bots har cycle trading (AI: conf>=7, Rule: strength>=5). 30 min cooldown |
 
 **Scale-in** (hvert ~10 min): Hvis position er profitabel OG ny AI confidence >= entry confidence + 2, tilfoej 50% ekstra.
 
@@ -200,6 +203,11 @@ Baggrundstraad der tjekker positioner hver 12. sekund. 7 regler:
 
 ### ATR-baseret Stop Loss
 `stop_loss = entry_price * (1 ∓ atr_pct * 2.0)`, clamped til [3%, 8%]. Tilpasser sig automatisk til coin volatilitet (BTC ~1% vs DOGE ~3-5%).
+
+### ATR-baseret Take Profit (grid-inspireret)
+`take_profit = entry_price * (1 ± atr_pct * 1.5)`, clamped til [1.5%, 6.0%].
+Stjålet fra grid trading: realistiske mål der faktisk rammes (3-4% typisk), i stedet for faste 7% der aldrig rammes.
+Eksempel: BTC med 2% ATR → TP ved 3%. ETH med 2.5% ATR → TP ved 3.75%.
 
 ### Confidence-baseret Position Sizing
 | Confidence | Multiplier | Betydning |
@@ -292,6 +300,10 @@ risk:
 watchdog:
   check_interval: 12
   breakeven_trigger_pct: 1.5
+  progressive_sl_trigger_pct: 2.0  # Start trailing SL server-side
+  progressive_sl_trail_pct: 1.0    # Trail 1% bag pris
+  pullback_peak_trigger_pct: 1.5   # Peak profit for pullback close
+  pullback_close_pct: 0.75         # Pullback fra peak der trigger close
   trailing_trigger_pct: 2.5
   trailing_atr_mult: 1.5
   partial_profit_pct: 4.0
@@ -358,6 +370,34 @@ Begge bots deler samme Docker image men koerer som separate containere med isole
 ---
 
 ## Changelog
+
+### 09-03-2026: Grid trading optimering + profit-beskyttelse
+**Hovedproblem:** Botten tog ikke profit. Positioner toppede (ETH +€428, BTC +€216) men blev holdt
+mens prisen faldt. Account value gik fra €99.400 til €98.400 uden at botten reagerede.
+
+**Nye watchdog-regler:**
+- **Profit pullback close** (Rule 3c) — Hvis peak P/L >= 1.5% og pris falder 0.75% fra peak: LUK STRAKS.
+  Eksempel: ETH peak +3.2% → lukker ved +2.45% (i stedet for at ride ned til break-even)
+- **Progressive server-side SL** (Rule 3b) — SL trails 1.0% bag pris paa Capital.com server.
+  Opdateres kun naar SL rykker >= 0.3% (undgaar API-spam). Virker selv hvis bot crasher
+- **Sentiment-based close** (Rule 7) — Lukker profitable longs i bearish timer og shorts i bullish timer.
+  Baseret paa 7 dages historiske timereturns via TimeBias
+
+**Grid trading research (Pionex):**
+- Undersoegt Grid Trading Bot, DCA/Martingale, Reverse Grid, Rebalancing, Spot-Futures Arbitrage
+- Akademisk konklusion: grid trading uden trend-forudsigelse har forventet vaerdi = 0 minus fees
+- **Hvad vi stjal:** Realistisk TP (ATR-baseret), cycle trading, hurtig re-entry
+- **Hvad vi droppede:** Multi-position grids (CFD overnight fees draeber det), DCA/Martingale (eskalerende tab)
+
+**ATR-baseret Take Profit:**
+- TP aendret fra faste 7% til 1.5×ATR, clamped [1.5%, 6.0%]
+- BTC med 2% ATR → TP ved 3% (realistisk, rammes faktisk)
+- Grid trading insight: hyppige smaa profits slaar sjældne store
+
+**Cycle trading for begge bots:**
+- Rule-bot fik cycle trading (var kun paa AI-bot). Kraever signal strength >= 5
+- Efter watchdog lukker position → tjek for modsat signal → abn ny position
+- 10% af tilgaengelig kapital (konservativ), 30 min cooldown per coin
 
 ### 09-03-2026: Evidensbaseret strategiskift
 **Aendringer:**
