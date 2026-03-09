@@ -15,6 +15,7 @@ from src.strategy.regime_detector import RegimeDetector
 from src.strategy.time_bias import TimeBias
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
+from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
 
@@ -45,6 +46,8 @@ class CryptoBot:
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
+        self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
+        self.watchdog.executor = self.executor  # For cooldown tracking
         self.reporter = Reporter(self.config)
 
         self.coins = self.config.get("trading", {}).get("coins", [])
@@ -86,6 +89,9 @@ class CryptoBot:
         self._register_commands()
         self.notifier.start_command_listener()
 
+        # Start position watchdog (protects profits every 12 seconds)
+        self.watchdog.start()
+
         self.running = True
         self._run_loop()
 
@@ -94,7 +100,8 @@ class CryptoBot:
         while self.running:
             try:
                 self._scan_cycle()
-                self.executor.check_trailing_stops()
+                # Watchdog handles trailing stops, break-even, partial profit etc.
+                # (runs in background thread every 12s)
                 time.sleep(self.scan_interval)
 
             except KeyboardInterrupt:
@@ -170,6 +177,10 @@ class CryptoBot:
                     continue
 
                 signal_type, details = self.signals.get_signal(df, epic=epic)
+
+                # Feed ATR to watchdog for trailing stop calculations
+                atr_pct = details.get("atr_pct", 2.0)
+                self.watchdog.update_atr(epic, atr_pct)
 
                 if signal_type in ("BUY", "SELL"):
                     strength = details.get("signal_strength", 4)
@@ -579,6 +590,7 @@ class CryptoBot:
     def stop(self):
         """Stop the bot gracefully."""
         self.running = False
+        self.watchdog.stop()
         self.notifier.stop_command_listener()
         logger.info("CryptoBot stopper...")
 
