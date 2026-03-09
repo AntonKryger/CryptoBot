@@ -58,6 +58,11 @@ class PositionWatchdog:
         self._cycle_cooldowns = {}     # {epic: datetime} - 30 min cooldown
         self._cycle_callback = None    # Set by main_ai.py for re-analysis
 
+        # Progressive trailing SL state
+        self._last_sl_update = {}      # {deal_id: last_sl_price} - avoid API spam
+        self.progressive_sl_trigger = watchdog_cfg.get("progressive_sl_trigger_pct", 2.0)
+        self.progressive_sl_trail = watchdog_cfg.get("progressive_sl_trail_pct", 1.0)
+
         # Scale-in state
         self._scale_in_done = set()    # deal_ids that already got scale-in
         self._entry_confidence = {}    # {deal_id: confidence} - confidence at entry
@@ -72,6 +77,7 @@ class PositionWatchdog:
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
             f"breakeven={self.breakeven_trigger_pct}%, "
+            f"progressive_trail={self.progressive_sl_trigger}%+{self.progressive_sl_trail}%trail, "
             f"trailing={self.trailing_trigger_pct}%@{self.trailing_atr_mult}xATR, "
             f"partial={self.partial_profit_pct}%@{self.partial_close_ratio*100:.0f}%)"
         )
@@ -132,6 +138,7 @@ class PositionWatchdog:
             self._breakeven_set.discard(deal_id)
             self._entry_times.pop(deal_id, None)
             self._tp_extensions.pop(deal_id, None)
+            self._last_sl_update.pop(deal_id, None)
             self._scale_in_done.discard(deal_id)
             self._entry_confidence.pop(deal_id, None)
 
@@ -211,6 +218,12 @@ class PositionWatchdog:
                 )
             except Exception as e:
                 logger.warning(f"Watchdog: Failed to set break-even for {epic}: {e}")
+
+        # ── Rule 3b: Progressive trailing SL (server-side) ──
+        # After break-even is set, keep moving SL up as price rises
+        # This locks in profit on Capital.com's server (survives bot crash)
+        if deal_id in self._breakeven_set and pl_pct >= self.progressive_sl_trigger:
+            self._update_progressive_sl(deal_id, epic, direction, entry_price, current_price, pl_pct, pos)
 
         # ── Rule 4: Partial profit-taking ──
         if deal_id not in self._partial_taken and pl_pct >= self.partial_profit_pct:
@@ -303,6 +316,55 @@ class PositionWatchdog:
             self._trigger_cycle_trade(epic, direction, pl_pct)
         except Exception as e:
             logger.error(f"Watchdog: Sentiment close failed for {epic}: {e}")
+
+    def _update_progressive_sl(self, deal_id, epic, direction, entry_price, current_price, pl_pct, pos):
+        """Move server-side SL up as position profits grow.
+        Trail = 1.0% behind current price. Only updates if SL moves up by >= 0.3%."""
+        trail_pct = self.progressive_sl_trail
+
+        if direction == "BUY":
+            new_sl = round(current_price * (1 - trail_pct / 100), 5)
+        else:
+            new_sl = round(current_price * (1 + trail_pct / 100), 5)
+
+        # Check current server SL
+        current_sl = pos["position"].get("stopLevel")
+        if current_sl is None:
+            return
+        current_sl = float(current_sl)
+
+        # Only move SL in profitable direction (never loosen it)
+        if direction == "BUY" and new_sl <= current_sl:
+            return
+        if direction == "SELL" and new_sl >= current_sl:
+            return
+
+        # Only update if meaningful move (>= 0.3% of entry price) to avoid API spam
+        sl_move_pct = abs(new_sl - current_sl) / entry_price * 100
+        if sl_move_pct < 0.3:
+            return
+
+        try:
+            self.client.update_position(deal_id, stop_loss=new_sl)
+            self._last_sl_update[deal_id] = new_sl
+
+            # Calculate locked profit
+            if direction == "BUY":
+                locked_pct = (new_sl - entry_price) / entry_price * 100
+            else:
+                locked_pct = (entry_price - new_sl) / entry_price * 100
+
+            logger.info(
+                f"WATCHDOG: Progressive SL for {epic}: {current_sl:.4f} -> {new_sl:.4f} "
+                f"(P/L: +{pl_pct:.1f}%, locked: +{locked_pct:.1f}%, trail: {trail_pct}%)"
+            )
+            self.notifier.send(
+                f"📈 <b>SL strammet: {epic}</b>\n"
+                f"SL: {current_sl:.4f} → {new_sl:.4f}\n"
+                f"Låst profit: +{locked_pct:.1f}% | Nuværende: +{pl_pct:.1f}%"
+            )
+        except Exception as e:
+            logger.warning(f"Watchdog: Progressive SL update failed for {epic}: {e}")
 
     def _check_max_hold_time(self, deal_id, epic, direction, size, pl_pct):
         """Close position if max hold time exceeded AND position is losing or breakeven.
