@@ -11,6 +11,7 @@ from datetime import datetime
 from src.config import load_config
 from src.api.capital_client import CapitalClient
 from src.strategy.signals import SignalEngine
+from src.strategy.regime_detector import RegimeDetector
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.notifications.telegram_bot import TelegramNotifier
@@ -36,6 +37,8 @@ class CryptoBot:
         # Initialize components
         self.client = CapitalClient(self.config)
         self.signals = SignalEngine(self.config)
+        self.regime = RegimeDetector(self.client, self.config)
+        self.signals.regime_detector = self.regime  # connect regime to signals
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
@@ -159,8 +162,10 @@ class CryptoBot:
 
                 if signal_type in ("BUY", "SELL"):
                     strength = details.get("signal_strength", 4)
-                    trade_signals.append((epic, signal_type, strength, details))
-                    logger.info(f"{epic}: {signal_type} (styrke: {strength}) -> til allokering")
+                    # Map rule-bot score to confidence for capital allocation
+                    confidence = self.risk.map_rule_score_to_confidence(strength)
+                    trade_signals.append((epic, signal_type, confidence, details))
+                    logger.info(f"{epic}: {signal_type} (styrke: {strength}, conf: {confidence}) -> til allokering")
                 else:
                     logger.info(f"{epic}: HOLD ({details.get('reason', '')[:60]})")
 
@@ -179,7 +184,12 @@ class CryptoBot:
             try:
                 current_price = details["close"]
                 size = self.risk.calculate_position_size(allocated_amount, current_price)
-                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+                # Use ATR-based SL if ATR is available, else fall back to fixed %
+                atr_pct = details.get("atr_pct", 0)
+                if atr_pct > 0:
+                    stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
+                else:
+                    stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type)
 
                 cat = self.risk.get_coin_category(epic)

@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 class SignalEngine:
     """Range-trading signal engine that detects swing highs/lows and trades
     mean-reversion patterns. Buys near support, shorts near resistance.
-    Includes Reddit sentiment analysis as additional signal layer."""
+    Includes Reddit sentiment analysis as additional signal layer.
+    Integrates regime detection for signal adjustment."""
 
     def __init__(self, config):
         signals_cfg = config.get("signals", {})
@@ -26,6 +27,9 @@ class SignalEngine:
         # Reddit sentiment
         from src.strategy.reddit_sentiment import RedditSentiment
         self.reddit = RedditSentiment(config)
+
+        # Regime detector (set externally by main.py / main_ai.py)
+        self.regime_detector = None
 
     def prepare_dataframe(self, prices_data):
         """Convert Capital.com price data to a pandas DataFrame."""
@@ -62,11 +66,9 @@ class SignalEngine:
         df["range_position"] = ((df["close"] - df["range_low"]) / range_size.replace(0, float("nan"))) * 100
 
         # ── Support & Resistance levels (pivot-based) ──
-        # Find swing lows (support) and swing highs (resistance)
         window = 10
         df["swing_low"] = df["low"][(df["low"] == df["low"].rolling(window=window * 2 + 1, center=True).min())]
         df["swing_high"] = df["high"][(df["high"] == df["high"].rolling(window=window * 2 + 1, center=True).max())]
-        # Forward-fill support/resistance for comparison
         df["support"] = df["swing_low"].ffill()
         df["resistance"] = df["swing_high"].ffill()
 
@@ -89,7 +91,6 @@ class SignalEngine:
         bb_std = df["close"].rolling(window=20).std()
         df["bb_upper"] = df["bb_mid"] + (bb_std * 2)
         df["bb_lower"] = df["bb_mid"] - (bb_std * 2)
-        # %B - where price is in Bollinger Bands (0=lower, 1=upper)
         df["bb_pct"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"]).replace(0, float("nan"))
 
         # ── EMAs ──
@@ -111,12 +112,19 @@ class SignalEngine:
         df["atr"] = true_range.rolling(window=self.atr_period).mean()
         df["atr_pct"] = df["atr"] / df["close"] * 100
 
+        # ── MACD ──
+        ema_12 = df["close"].ewm(span=12, adjust=False).mean()
+        ema_26 = df["close"].ewm(span=26, adjust=False).mean()
+        df["macd"] = ema_12 - ema_26
+        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+        df["macd_histogram"] = df["macd"] - df["macd_signal"]
+
         # ── Volume ──
         df["volume_ma"] = df["volume"].rolling(window=20).mean()
         df["volume_spike"] = df["volume"] > (df["volume_ma"] * self.volume_multiplier)
+        df["volume_ratio"] = df["volume"] / df["volume_ma"].replace(0, float("nan"))
 
         # ── Momentum / bounce detection ──
-        # Price rate of change over short periods
         df["roc_3"] = df["close"].pct_change(3) * 100   # 3 candles = 45 min
         df["roc_6"] = df["close"].pct_change(6) * 100   # 6 candles = 1.5 hours
 
@@ -125,13 +133,11 @@ class SignalEngine:
         df["bearish_candle"] = df["close"] < df["open"]
         df["candle_body"] = (df["close"] - df["open"]).abs()
         df["prev_candle_body"] = df["candle_body"].shift(1)
-        # Bullish engulfing: current green candle body bigger than previous red candle
         df["bullish_engulfing"] = (
             df["bullish_candle"] &
             ~df["bullish_candle"].shift(1).fillna(True) &
             (df["candle_body"] > df["prev_candle_body"])
         )
-        # Bearish engulfing
         df["bearish_engulfing"] = (
             df["bearish_candle"] &
             df["bullish_candle"].shift(1).fillna(False) &
@@ -141,14 +147,12 @@ class SignalEngine:
         return df
 
     def _detect_bounce(self, df, direction):
-        """Detect if price is bouncing off support (BUY) or resistance (SELL).
-        Looks for reversal candle patterns and momentum shift."""
+        """Detect if price is bouncing off support (BUY) or resistance (SELL)."""
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         prev2 = df.iloc[-3] if len(df) > 2 else prev
 
         if direction == "BUY":
-            # Price was falling, now turning up
             was_falling = prev["roc_3"] < -0.5 or prev2["roc_3"] < -0.5
             now_rising = latest["close"] > prev["close"]
             bullish_candle = latest["bullish_candle"]
@@ -167,7 +171,6 @@ class SignalEngine:
             return bounce_score
 
         else:  # SELL
-            # Price was rising, now turning down
             was_rising = prev["roc_3"] > 0.5 or prev2["roc_3"] > 0.5
             now_falling = latest["close"] < prev["close"]
             bearish_candle = latest["bearish_candle"]
@@ -185,10 +188,67 @@ class SignalEngine:
                 bounce_score += 1
             return bounce_score
 
+    def _detect_macd_divergence(self, df, direction):
+        """Detect MACD divergence - price makes new extreme but MACD doesn't.
+        Returns score adjustment (0 or +2)."""
+        if len(df) < 20:
+            return 0
+
+        recent = df.tail(20)
+
+        if direction == "SELL":
+            # Bearish divergence: price makes new high but MACD histogram decreasing
+            price_high = recent["high"].iloc[-1] >= recent["high"].iloc[-10:].max() * 0.998
+            macd_lower = recent["macd_histogram"].iloc[-1] < recent["macd_histogram"].iloc[-5:].mean()
+            if price_high and macd_lower:
+                return 2
+        else:  # BUY
+            # Bullish divergence: price makes new low but MACD histogram increasing
+            price_low = recent["low"].iloc[-1] <= recent["low"].iloc[-10:].min() * 1.002
+            macd_higher = recent["macd_histogram"].iloc[-1] > recent["macd_histogram"].iloc[-5:].mean()
+            if price_low and macd_higher:
+                return 2
+
+        return 0
+
+    def _detect_volume_climax(self, df, direction):
+        """Detect volume climax: >3x average volume on a directional candle.
+        Returns score adjustment (0 or +2)."""
+        latest = df.iloc[-1]
+        vol_ratio = latest.get("volume_ratio", 0)
+
+        if vol_ratio < 3.0:
+            return 0
+
+        if direction == "SELL" and latest["bearish_candle"]:
+            return 2
+        elif direction == "BUY" and latest["bullish_candle"]:
+            return 2
+
+        return 0
+
+    def _detect_failed_breakout(self, df, direction):
+        """Detect failed breakout above range_high (sell signal).
+        High went above range_high but close is back below.
+        Returns score adjustment (0 or +3)."""
+        if direction != "SELL":
+            return 0
+
+        latest = df.iloc[-1]
+        range_high = latest.get("range_high")
+        if range_high is None or pd.isna(range_high):
+            return 0
+
+        # High exceeded range_high but close is below it
+        if latest["high"] > range_high and latest["close"] < range_high:
+            return 3
+
+        return 0
+
     def get_signal(self, df, epic=None):
         """
         Range-trading signal: buy at support, short at resistance.
-        Reddit sentiment is used as additional scoring layer.
+        Reddit sentiment and regime detection as additional scoring layers.
         Returns: ('BUY'|'SELL'|'HOLD', details_dict)
         """
         if df is None or len(df) < self.range_period + 5:
@@ -203,6 +263,15 @@ class SignalEngine:
                 buy_sentiment_adj, sell_sentiment_adj, sentiment_data = self.reddit.get_signal_adjustment(epic)
             except Exception as e:
                 logger.warning(f"Reddit sentiment failed for {epic}: {e}")
+
+        # Get regime info
+        regime = None
+        adx = 0.0
+        if self.regime_detector and epic:
+            try:
+                regime, adx = self.regime_detector.get_regime(epic)
+            except Exception as e:
+                logger.warning(f"Regime detection failed for {epic}: {e}")
 
         df = self.calculate_indicators(df)
         latest = df.iloc[-1]
@@ -222,7 +291,10 @@ class SignalEngine:
             "vwap": latest.get("vwap"),
             "ema_fast": latest[f"ema_{self.ema_fast}"],
             "ema_slow": latest[f"ema_{self.ema_slow}"],
+            "macd_histogram": latest.get("macd_histogram", 0),
             "sentiment": sentiment_data,
+            "regime": regime,
+            "adx": adx,
         }
 
         # ── Check if there's a tradeable range ──
@@ -289,6 +361,27 @@ class SignalEngine:
                 label = sentiment_data["label"] if sentiment_data else "?"
                 reasons.append(f"Reddit {label} ({buy_sentiment_adj:+d})")
 
+            # 8. MACD bullish divergence
+            macd_div = self._detect_macd_divergence(df, "BUY")
+            if macd_div > 0:
+                score += macd_div
+                reasons.append(f"MACD bullish divergence (+{macd_div})")
+
+            # 9. Volume climax on bullish candle
+            vol_climax = self._detect_volume_climax(df, "BUY")
+            if vol_climax > 0:
+                score += vol_climax
+                reasons.append(f"Volume climax on green candle (+{vol_climax})")
+
+            # 10. Regime adjustment
+            if regime:
+                regime_adj = 0
+                if self.regime_detector:
+                    regime_adj = self.regime_detector.get_signal_adjustment(epic, "BUY")
+                if regime_adj != 0:
+                    score += regime_adj
+                    reasons.append(f"Regime {regime} ({regime_adj:+d})")
+
             details["buy_score"] = score
             details["buy_reasons"] = reasons
 
@@ -301,6 +394,18 @@ class SignalEngine:
 
         # ── SELL/SHORT SIGNAL: Price near top of range ──
         elif range_pos >= self.sell_zone_pct:
+            # Adjust sell zone for memecoins (75% instead of 80%)
+            if epic and epic in {"DOGEUSD", "SHIBAUSD", "PEPEUSD", "FLOKIUSD"}:
+                memecoin_sell_zone = 75
+                if range_pos < memecoin_sell_zone:
+                    details["reason"] = f"Memecoin: not in sell zone yet ({range_pos:.0f}% < {memecoin_sell_zone}%)"
+                    return "HOLD", details
+
+            # Regime check: only short in RANGING or TRENDING_DOWN
+            if regime and regime not in (None, "RANGING", "TRENDING_DOWN"):
+                details["reason"] = f"Short blocked: regime is {regime} (need RANGING or TRENDING_DOWN)"
+                return "HOLD", details
+
             score = 0
             reasons = []
 
@@ -349,6 +454,33 @@ class SignalEngine:
                 score += sell_sentiment_adj
                 label = sentiment_data["label"] if sentiment_data else "?"
                 reasons.append(f"Reddit {label} ({sell_sentiment_adj:+d})")
+
+            # 8. MACD bearish divergence (+2)
+            macd_div = self._detect_macd_divergence(df, "SELL")
+            if macd_div > 0:
+                score += macd_div
+                reasons.append(f"MACD bearish divergence (+{macd_div})")
+
+            # 9. Volume climax on bearish candle (+2)
+            vol_climax = self._detect_volume_climax(df, "SELL")
+            if vol_climax > 0:
+                score += vol_climax
+                reasons.append(f"Volume climax on red candle (+{vol_climax})")
+
+            # 10. Failed breakout above range high (+3)
+            failed_bo = self._detect_failed_breakout(df, "SELL")
+            if failed_bo > 0:
+                score += failed_bo
+                reasons.append(f"Failed breakout above range high (+{failed_bo})")
+
+            # 11. Regime adjustment
+            if regime:
+                regime_adj = 0
+                if self.regime_detector:
+                    regime_adj = self.regime_detector.get_signal_adjustment(epic, "SELL")
+                if regime_adj != 0:
+                    score += regime_adj
+                    reasons.append(f"Regime {regime} ({regime_adj:+d})")
 
             details["sell_score"] = score
             details["sell_reasons"] = reasons

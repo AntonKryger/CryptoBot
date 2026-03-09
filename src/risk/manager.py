@@ -9,6 +9,15 @@ MAJORS = {"BTCUSD", "ETHUSD"}
 
 # Everything else is an altcoin
 
+# Confidence multiplier lookup (confidence score -> sizing multiplier)
+CONFIDENCE_MULTIPLIER = {
+    1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25, 5: 0.25,
+    6: 0.25, 7: 0.50, 8: 0.75, 9: 1.00, 10: 1.00,
+}
+
+# Rule-bot score to confidence mapping
+RULE_SCORE_TO_CONFIDENCE = {4: 6, 5: 7, 6: 8, 7: 9, 8: 9, 9: 9, 10: 9}
+
 
 class RiskManager:
     """Manages position sizing, stop-loss, take-profit, and kill switch."""
@@ -22,6 +31,19 @@ class RiskManager:
         self.daily_loss_limit = risk_cfg.get("daily_loss_limit", 5.0)
         self.total_loss_limit = risk_cfg.get("total_loss_limit", 30.0)
         self.leverage = config.get("trading", {}).get("leverage", 2)
+
+        # ATR-based stop loss params
+        self.atr_sl_multiplier = risk_cfg.get("atr_sl_multiplier", 2.0)
+        self.atr_sl_min_pct = risk_cfg.get("atr_sl_min_pct", 3.0)
+        self.atr_sl_max_pct = risk_cfg.get("atr_sl_max_pct", 8.0)
+
+        # Max hold time per category (hours)
+        hold_cfg = risk_cfg.get("max_hold_hours", {})
+        self.max_hold_hours = {
+            "major": hold_cfg.get("major", 24),
+            "altcoin": hold_cfg.get("altcoin", 8),
+            "memecoin": hold_cfg.get("memecoin", 4),
+        }
 
         # Capital allocation limits (% of total balance)
         alloc_cfg = risk_cfg.get("allocation", {})
@@ -86,6 +108,19 @@ class RiskManager:
             return self.max_major_pct
         return self.max_altcoin_pct
 
+    def get_max_hold_hours(self, epic):
+        """Get max hold time in hours based on coin category."""
+        cat = self.get_coin_category(epic)
+        return self.max_hold_hours.get(cat, 24)
+
+    def get_confidence_multiplier(self, confidence):
+        """Get position sizing multiplier based on confidence score."""
+        return CONFIDENCE_MULTIPLIER.get(int(confidence), 0.25)
+
+    def map_rule_score_to_confidence(self, rule_score):
+        """Map rule-bot signal score to confidence level."""
+        return RULE_SCORE_TO_CONFIDENCE.get(min(rule_score, 10), 6)
+
     def allocate_capital(self, signals, available_balance):
         """Allocate capital across multiple signals weighted by confidence.
 
@@ -99,7 +134,14 @@ class RiskManager:
         if not signals:
             return []
 
-        max_total = available_balance * (self.max_total_exposure_pct / 100)
+        # Determine max exposure based on highest confidence
+        max_confidence = max(s[2] for s in signals)
+        if max_confidence >= 9:
+            exposure_pct = 100  # allow full exposure for high confidence
+        else:
+            exposure_pct = self.max_total_exposure_pct
+
+        max_total = available_balance * (exposure_pct / 100)
         remaining = max_total
 
         # Sort by confidence (highest first)
@@ -124,6 +166,10 @@ class RiskManager:
             weight_share = confidence / total_weight
             ideal_amount = max_total * weight_share
 
+            # Apply confidence multiplier (reduces size for low confidence)
+            conf_mult = self.get_confidence_multiplier(confidence)
+            ideal_amount *= conf_mult
+
             # Clamp to category max
             amount = min(ideal_amount, max_for_coin, remaining)
 
@@ -138,7 +184,7 @@ class RiskManager:
             cat = self.get_coin_category(epic)
             logger.info(
                 f"Allocation {epic} ({cat}): €{amount:.0f} "
-                f"(conf={confidence}, max={self.get_max_allocation_pct(epic)}%)"
+                f"(conf={confidence}, mult={conf_mult:.0%}, max={self.get_max_allocation_pct(epic)}%)"
             )
 
         return allocations
@@ -150,11 +196,37 @@ class RiskManager:
         return round(size, 4)
 
     def calculate_stop_loss(self, entry_price, direction):
-        """Calculate stop-loss price."""
+        """Calculate fixed percentage stop-loss price (fallback for manual trades)."""
         if direction == "BUY":
             return round(entry_price * (1 - self.stop_loss_pct / 100), 2)
         else:  # SELL (short)
             return round(entry_price * (1 + self.stop_loss_pct / 100), 2)
+
+    def calculate_atr_stop_loss(self, entry_price, direction, atr_pct):
+        """Calculate ATR-based stop-loss price.
+
+        Args:
+            entry_price: Position entry price
+            direction: 'BUY' or 'SELL'
+            atr_pct: ATR as percentage of price
+
+        Returns:
+            Stop-loss price level
+        """
+        raw_sl_pct = atr_pct * self.atr_sl_multiplier
+        # Clamp to [min, max] range
+        sl_pct = max(self.atr_sl_min_pct, min(self.atr_sl_max_pct, raw_sl_pct))
+
+        if direction == "BUY":
+            sl = entry_price * (1 - sl_pct / 100)
+        else:
+            sl = entry_price * (1 + sl_pct / 100)
+
+        logger.info(
+            f"ATR SL: atr={atr_pct:.2f}% × {self.atr_sl_multiplier} = "
+            f"{raw_sl_pct:.2f}% -> clamped to {sl_pct:.2f}% -> SL={sl:.4f}"
+        )
+        return round(sl, 5)
 
     def calculate_take_profit(self, entry_price, direction):
         """Calculate take-profit price."""

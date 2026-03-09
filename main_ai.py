@@ -13,6 +13,7 @@ from src.config import load_config
 from src.api.capital_client import CapitalClient
 from src.strategy.signals import SignalEngine
 from src.strategy.ai_analyst import AIAnalyst
+from src.strategy.regime_detector import RegimeDetector
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
@@ -40,11 +41,19 @@ class CryptoBotAI:
         self.client = CapitalClient(self.config)
         self.signals = SignalEngine(self.config)  # reuse for indicators + sentiment
         self.ai = AIAnalyst(self.config)
+        self.regime = RegimeDetector(self.client, self.config)
+        self.signals.regime_detector = self.regime  # connect regime to signals
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
         self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.reporter = Reporter(self.config)
+
+        # Connect watchdog to AI/signals for cycle trading and scale-in
+        self.watchdog.ai_analyst = self.ai
+        self.watchdog.signal_engine = self.signals
+        self.watchdog._cycle_callback = self._handle_cycle_trade
+        self.watchdog._scale_in_callback = self._handle_scale_in
 
         self.coins = self.config.get("trading", {}).get("coins", [])
         self.scan_interval = self.config.get("trading", {}).get("scan_interval", 60)
@@ -82,9 +91,10 @@ class CryptoBotAI:
             f"Min confidence: {self.ai.min_confidence}/10\n"
             f"Coins: {len(self.coins)}\n\n"
             f"Watchdog: hver {self.watchdog.check_interval}s\n"
-            f"Trailing: {self.watchdog.trailing_atr_mult}x ATR\n"
+            f"Break-even: +{self.watchdog.breakeven_trigger_pct}%\n"
+            f"Trailing: +{self.watchdog.trailing_trigger_pct}% @ {self.watchdog.trailing_atr_mult}x ATR\n"
             f"Delvis profit: {self.watchdog.partial_profit_pct}% -> luk {self.watchdog.partial_close_ratio*100:.0f}%\n\n"
-            f"Kommandoer: /ai_status /ai_trades /ai_stop /ai_help"
+            f"Kommandoer: /ai_status /ai_trades /ai_stop /ai_debug /ai_help"
         )
 
         # Register Telegram commands
@@ -178,6 +188,10 @@ class CryptoBotAI:
                 latest_atr = df.iloc[-1].get("atr_pct", 2.0)
                 self.watchdog.update_atr(epic, latest_atr)
 
+                # Get regime
+                regime, adx = self.regime.get_regime(epic)
+                regime_data = {"regime": regime, "adx": adx}
+
                 # Get sentiment data
                 sentiment_data = None
                 try:
@@ -197,10 +211,10 @@ class CryptoBotAI:
                     "score": rule_score,
                     "reasons": rule_reasons,
                 }
-                logger.info(f"[AI] {epic}: Rule-based bot says {rule_signal_type} (score={rule_score})")
+                logger.info(f"[AI] {epic}: Rule-based bot says {rule_signal_type} (score={rule_score}) | Regime: {regime} (ADX: {adx:.1f})")
 
-                # AI analysis
-                signal_type, details = self.ai.analyze(epic, df, sentiment_data, rule_signal=rule_signal)
+                # AI analysis with regime data
+                signal_type, details = self.ai.analyze(epic, df, sentiment_data, rule_signal=rule_signal, regime_data=regime_data)
 
                 if signal_type in ("BUY", "SELL"):
                     confidence = details.get("ai_confidence", 5)
@@ -226,7 +240,13 @@ class CryptoBotAI:
             try:
                 current_price = details["close"]
                 size = self.risk.calculate_position_size(allocated_amount, current_price)
-                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+
+                # Use ATR-based SL
+                atr_pct = details.get("atr_pct", 0)
+                if atr_pct > 0:
+                    stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
+                else:
+                    stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type)
 
                 cat = self.risk.get_coin_category(epic)
@@ -248,11 +268,156 @@ class CryptoBotAI:
                     self.executor._log_trade(epic, signal_type, size, current_price,
                                              stop_loss, take_profit, result, details)
                     self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+
+                    # Track in watchdog for max hold time and scale-in
+                    deal_id = result.get("dealReference") or result.get("dealId", "")
+                    confidence = details.get("ai_confidence", 5)
+                    self.watchdog.track_entry(deal_id, epic, confidence)
+
                     self._notify_ai_trade(signal_type, epic, size, current_price,
                                           stop_loss, take_profit, details, allocated_amount)
 
             except Exception as e:
                 logger.error(f"[AI] Trade execution failed for {epic}: {e}")
+
+    def _handle_cycle_trade(self, epic, opposite_direction):
+        """Called by watchdog when a position closes - check for reversal trade."""
+        try:
+            logger.info(f"[Cycle] Analyzing {epic} for {opposite_direction} reversal...")
+
+            prices = self.client.get_prices(epic, resolution=self.timeframe)
+            df = self.signals.prepare_dataframe(prices)
+            if df is None:
+                return
+
+            df = self.signals.calculate_indicators(df)
+
+            # Get regime
+            regime, adx = self.regime.get_regime(epic)
+            regime_data = {"regime": regime, "adx": adx}
+
+            # Get sentiment
+            sentiment_data = None
+            try:
+                sentiment_data = self.signals.reddit.get_sentiment(epic)
+            except Exception:
+                pass
+
+            # AI analysis for reversal
+            signal_type, details = self.ai.analyze(epic, df, sentiment_data, regime_data=regime_data)
+            confidence = details.get("ai_confidence", 0)
+
+            if signal_type != opposite_direction:
+                logger.info(f"[Cycle] {epic}: AI says {signal_type}, not {opposite_direction}. Skipping.")
+                return
+
+            if confidence < 7:
+                logger.info(f"[Cycle] {epic}: Confidence {confidence} < 7. Skipping reversal.")
+                return
+
+            # Execute cycle trade
+            balance = self.client.get_account_balance()
+            if not balance:
+                return
+
+            available = balance.get("available", balance["balance"])
+            current_price = details["close"]
+            atr_pct = details.get("atr_pct", 0)
+
+            # Max-sized for confidence >= 9
+            if confidence >= 9:
+                allocated = available * 0.25  # 25% for max confidence cycle trade
+            else:
+                allocated = available * 0.15  # 15% for standard cycle trade
+
+            size = self.risk.calculate_position_size(allocated, current_price)
+            if atr_pct > 0:
+                stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
+            else:
+                stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
+            take_profit = self.risk.calculate_take_profit(current_price, signal_type)
+
+            result = self.client.create_position(
+                epic=epic, direction=signal_type, size=size,
+                stop_loss=stop_loss, take_profit=take_profit,
+            )
+
+            if result:
+                self.executor._log_trade(epic, signal_type, size, current_price,
+                                         stop_loss, take_profit, result, details)
+                deal_id = result.get("dealReference") or result.get("dealId", "")
+                self.watchdog.track_entry(deal_id, epic, confidence)
+
+                self.notifier.send(
+                    f"🔄 <b>Cycle trade: {epic}</b>\n"
+                    f"{'🟢 LONG' if signal_type == 'BUY' else '🔴 SHORT'}\n"
+                    f"Confidence: {confidence}/10\n"
+                    f"Pris: EUR {current_price:.4f}\n"
+                    f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}"
+                )
+                logger.info(f"[Cycle] {epic}: {signal_type} executed (conf={confidence})")
+
+        except Exception as e:
+            logger.error(f"[Cycle] Error for {epic}: {e}")
+
+    def _handle_scale_in(self, epic, direction, deal_id, entry_confidence, pos):
+        """Called by watchdog to check if scale-in is appropriate."""
+        try:
+            # Re-evaluate with AI
+            prices = self.client.get_prices(epic, resolution=self.timeframe)
+            df = self.signals.prepare_dataframe(prices)
+            if df is None:
+                return
+
+            df = self.signals.calculate_indicators(df)
+
+            regime, adx = self.regime.get_regime(epic)
+            regime_data = {"regime": regime, "adx": adx}
+
+            signal_type, details = self.ai.analyze(epic, df, regime_data=regime_data)
+            new_confidence = details.get("ai_confidence", 0)
+
+            # Only scale-in if new confidence >= entry confidence + 2
+            if signal_type != direction or new_confidence < entry_confidence + 2:
+                return
+
+            # Scale-in: 50% of original position
+            original_size = pos["position"]["size"]
+            scale_size = round(original_size * 0.5, 4)
+            if scale_size <= 0:
+                return
+
+            current_price = details["close"]
+            atr_pct = details.get("atr_pct", 0)
+            if atr_pct > 0:
+                stop_loss = self.risk.calculate_atr_stop_loss(current_price, direction, atr_pct)
+            else:
+                stop_loss = self.risk.calculate_stop_loss(current_price, direction)
+            take_profit = self.risk.calculate_take_profit(current_price, direction)
+
+            result = self.client.create_position(
+                epic=epic, direction=direction, size=scale_size,
+                stop_loss=stop_loss, take_profit=take_profit,
+            )
+
+            if result:
+                self.watchdog.mark_scale_in_done(deal_id)
+                new_deal_id = result.get("dealReference") or result.get("dealId", "")
+                self.watchdog.track_entry(new_deal_id, epic, new_confidence)
+                self.executor._log_trade(epic, direction, scale_size, current_price,
+                                         stop_loss, take_profit, result, details)
+
+                self.notifier.send(
+                    f"📈 <b>Scale-in: {epic}</b>\n"
+                    f"Original conf: {entry_confidence} -> Ny conf: {new_confidence}\n"
+                    f"Tilføjet: {scale_size} (50% af original)\n"
+                    f"Pris: EUR {current_price:.4f}\n"
+                    f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}"
+                )
+                logger.info(f"[Scale-in] {epic}: +{scale_size} (conf {entry_confidence}->{new_confidence})")
+
+        except Exception as e:
+            logger.error(f"[Scale-in] Error for {epic}: {e}")
 
     def _notify_ai_trade(self, direction, epic, size, price, stop_loss, take_profit, details, allocated_amount=None):
         """Send AI trade notification with reasoning."""
@@ -262,6 +427,7 @@ class CryptoBotAI:
         reasoning = details.get("ai_reasoning", "")[:500]
         agreement = details.get("bot_agreement")
         cat = self.risk.get_coin_category(epic)
+        regime = details.get("regime", "?")
 
         msg = (
             f"🧠 {emoji} <b>[AI] {action}: {epic}</b> ({cat})\n"
@@ -271,8 +437,9 @@ class CryptoBotAI:
         if allocated_amount:
             msg += f"Allokeret: EUR {allocated_amount:.0f}\n"
         msg += (
-            f"Stop-loss: EUR {stop_loss:.4f}\n"
-            f"Take-profit: EUR {take_profit:.4f}\n\n"
+            f"Stop-loss: EUR {stop_loss:.5f}\n"
+            f"Take-profit: EUR {take_profit:.4f}\n"
+            f"Regime: {regime}\n\n"
             f"🤖 <b>AI Analyse (confidence: {confidence}/10):</b>\n"
             f"{reasoning}"
         )
@@ -290,6 +457,7 @@ class CryptoBotAI:
         self.notifier.register_command("/ai_stop", self._cmd_stop)
         self.notifier.register_command("/ai_help", self._cmd_help)
         self.notifier.register_command("/ai_close", self._cmd_close)
+        self.notifier.register_command("/ai_debug", self._cmd_debug)
         # Short versions (this bot has its own Telegram bot)
         self.notifier.register_command("/start", self._cmd_help)
         self.notifier.register_command("/help", self._cmd_help)
@@ -299,6 +467,7 @@ class CryptoBotAI:
         self.notifier.register_command("/report", self._cmd_report)
         self.notifier.register_command("/stop", self._cmd_stop)
         self.notifier.register_command("/close", self._cmd_close)
+        self.notifier.register_command("/debug", self._cmd_debug)
 
     def _cmd_status(self, args=None):
         balance = self.client.get_account_balance()
@@ -322,8 +491,18 @@ class CryptoBotAI:
                 epic = pos["market"]["epic"]
                 direction = pos["position"]["direction"]
                 pl = pos["position"].get("profit", 0)
+                deal_id = pos["position"]["dealId"]
                 emoji = "🟢" if direction == "BUY" else "🔴"
-                msg += f"  {emoji} {epic} ({direction}) P/L: EUR {pl:+.2f}\n"
+
+                # Show hold time
+                entry_time = self.watchdog._entry_times.get(deal_id)
+                hold_str = ""
+                if entry_time:
+                    hold_hours = (datetime.now() - entry_time).total_seconds() / 3600
+                    max_h = self.risk.get_max_hold_hours(epic)
+                    hold_str = f" | ⏱{hold_hours:.1f}/{max_h}h"
+
+                msg += f"  {emoji} {epic} ({direction}) P/L: EUR {pl:+.2f}{hold_str}\n"
 
         msg += f"\n<b>Statistik:</b>\n"
         msg += f"  Handler: {stats['total_trades']} | Win: {stats['win_rate']}%\n"
@@ -332,7 +511,8 @@ class CryptoBotAI:
         wd = self.watchdog.get_status()
         msg += f"\n<b>Watchdog:</b> {'Aktiv' if wd['running'] else 'Stoppet'}\n"
         msg += f"  Interval: {wd['interval']}s | Tracked: {wd['tracked_positions']}\n"
-        msg += f"  Break-even sat: {wd['breakeven_set']} | Delvis profit: {wd['partial_taken']}"
+        msg += f"  Break-even: {wd['breakeven_set']} | Delvis profit: {wd['partial_taken']}\n"
+        msg += f"  TP udvidelser: {sum(wd['tp_extensions'].values())} | Scale-ins: {wd['scale_ins']}"
         return msg
 
     def _cmd_trades(self, args=None):
@@ -367,13 +547,17 @@ class CryptoBotAI:
                 except Exception:
                     pass
 
+                # Get regime
+                regime, adx = self.regime.get_regime(epic)
+                regime_data = {"regime": regime, "adx": adx}
+
                 # Get rule-based signal
                 rule_sig, rule_det = self.signals.get_signal(df, epic=epic)
                 rule_sc = rule_det.get("buy_score") or rule_det.get("sell_score") or 0
                 rule_rs = rule_det.get("buy_reasons") or rule_det.get("sell_reasons") or []
                 rule_data = {"signal": rule_sig, "score": rule_sc, "reasons": rule_rs}
 
-                signal_type, details = self.ai.analyze(epic, df, sentiment, rule_signal=rule_data)
+                signal_type, details = self.ai.analyze(epic, df, sentiment, rule_signal=rule_data, regime_data=regime_data)
                 confidence = details.get("ai_confidence", "?")
                 reasoning = details.get("ai_reasoning", "")[:60]
 
@@ -384,9 +568,10 @@ class CryptoBotAI:
                 else:
                     emoji = "⚪"
 
-                # Show both signals
+                # Show both signals + regime
                 rule_emoji = "🟢" if rule_sig == "BUY" else "🔴" if rule_sig == "SELL" else "⚪"
-                msg += f"{emoji} <b>{epic}</b> (AI: {confidence}/10 | Bot: {rule_emoji}{rule_sig} {rule_sc}p)\n"
+                regime_short = regime[:3] if regime else "?"
+                msg += f"{emoji} <b>{epic}</b> (AI:{confidence}/10 | Bot:{rule_emoji}{rule_sc}p | {regime_short} ADX:{adx:.0f})\n"
                 msg += f"   {reasoning}\n\n"
 
             except Exception as e:
@@ -418,13 +603,17 @@ class CryptoBotAI:
             except Exception:
                 pass
 
+            # Get regime
+            regime, adx = self.regime.get_regime(epic)
+            regime_data = {"regime": regime, "adx": adx}
+
             # Get rule-based signal for report context
             rule_sig, rule_det = self.signals.get_signal(df, epic=epic)
             rule_sc = rule_det.get("buy_score") or rule_det.get("sell_score") or 0
             rule_rs = rule_det.get("buy_reasons") or rule_det.get("sell_reasons") or []
             rule_data = {"signal": rule_sig, "score": rule_sc, "reasons": rule_rs}
 
-            report = self.ai.generate_report(epic, df, sentiment, rule_signal=rule_data)
+            report = self.ai.generate_report(epic, df, sentiment, rule_signal=rule_data, regime_data=regime_data)
 
             # Split long reports into multiple messages (Telegram limit: 4096 chars)
             if len(report) > 4000:
@@ -436,6 +625,56 @@ class CryptoBotAI:
 
         except Exception as e:
             return f"Fejl ved rapport: {e}"
+
+    def _cmd_debug(self, args=None):
+        """Handle /ai_debug command - show detailed watchdog and regime state."""
+        msg = "🔧 <b>AI Debug Info</b>\n\n"
+
+        # Regime data
+        regimes = self.regime.get_all_regimes()
+        msg += "<b>Markedsregimer:</b>\n"
+        if regimes:
+            for epic, data in sorted(regimes.items()):
+                regime = data["regime"]
+                adx = data["adx"]
+                emoji = "📈" if "UP" in regime else "📉" if "DOWN" in regime else "↔️" if regime == "RANGING" else "❓"
+                msg += f"  {emoji} {epic}: {regime} (ADX: {adx:.1f})\n"
+        else:
+            msg += "  Ingen data endnu\n"
+
+        # ATR per coin
+        msg += "\n<b>ATR per coin:</b>\n"
+        debug = self.watchdog.get_debug_info()
+        for epic, atr in sorted(debug["atr_per_coin"].items()):
+            msg += f"  {epic}: {atr}\n"
+
+        # Hold times
+        msg += "\n<b>Holdtider:</b>\n"
+        if debug["hold_times"]:
+            for deal_short, hold_time in debug["hold_times"].items():
+                msg += f"  {deal_short}: {hold_time}\n"
+        else:
+            msg += "  Ingen aktive\n"
+
+        # Max hold limits
+        msg += "\n<b>Max hold limits:</b>\n"
+        for epic, limit in sorted(debug["max_hold_limits"].items()):
+            msg += f"  {epic}: {limit}\n"
+
+        # Watchdog state
+        msg += f"\n<b>Watchdog state:</b>\n"
+        msg += f"  Break-even: {debug['breakeven_positions']}\n"
+        msg += f"  Delvis profit: {debug['partial_profit_positions']}\n"
+        msg += f"  TP udvidelser: {sum(self.watchdog._tp_extensions.values())}\n"
+        msg += f"  Scale-ins: {debug['scale_ins_done']}\n"
+
+        # Cycle cooldowns
+        if debug["cycle_cooldowns"]:
+            msg += "\n<b>Cycle cooldowns:</b>\n"
+            for epic, remaining in debug["cycle_cooldowns"].items():
+                msg += f"  {epic}: {remaining}\n"
+
+        return msg
 
     def _cmd_close(self, args=None):
         positions = self.client.get_positions()
@@ -474,7 +713,8 @@ class CryptoBotAI:
             "🧠 <b>CryptoBot AI Kommandoer</b>\n\n"
             "<b>Analyse:</b>\n"
             "/scan - AI-analyse af alle coins\n"
-            "/report BTCUSD - Detaljeret rapport\n\n"
+            "/report BTCUSD - Detaljeret rapport\n"
+            "/debug - Debug info (ATR, regimer, watchdog)\n\n"
             "<b>Info:</b>\n"
             "/status - Balance og positioner\n"
             "/trades - Seneste handler\n\n"

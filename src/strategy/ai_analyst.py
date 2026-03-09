@@ -27,6 +27,7 @@ so you do NOT need to be overly cautious about entries. Focus on finding good se
 IMPORTANT RULES:
 - When 2+ indicators align (RSI + zone + bounce OR RSI + zone + volume), that IS enough to trade
 - The rule-based bot's signal is valuable: if it says BUY with score 4+, take that seriously
+- Sentiment is SUPPLEMENTARY. Require 3+ technical confirmations before weighting sentiment.
 - Fear & Greed "Extreme Fear" is often a BUY opportunity (contrarian) - do NOT treat it as a reason to HOLD
 - Fear & Greed "Extreme Greed" is often a SELL opportunity (contrarian)
 - Bearish sentiment during oversold conditions = potential reversal, not a reason to stay out
@@ -34,6 +35,17 @@ IMPORTANT RULES:
 - Be specific about what you see and why you recommend the action
 - When you and the rule-based bot agree, increase your confidence by 1-2 points
 - Confidence 5+ means you see a valid setup. Confidence 7+ means strong conviction.
+
+MARKET REGIME RULES:
+- RANGING regime: Mean-reversion is optimal. Trade with confidence.
+- TRENDING_UP regime: Favor BUY signals. SELL signals need stronger conviction.
+- TRENDING_DOWN regime: Favor SELL signals. BUY signals need stronger conviction.
+- NEUTRAL regime: Be cautious, only trade with strong (3+) technical confirmations.
+
+SHORT-SIDE RULES:
+- Shorts require stronger conviction. Only short with 3+ technical indicators confirming.
+- MACD bearish divergence, volume climax on red candle, and failed breakout are strong short confirmations.
+- Only short in RANGING or TRENDING_DOWN regimes.
 
 Respond ONLY with valid JSON in this exact format:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -64,7 +76,7 @@ class AIAnalyst:
             time.sleep(self._request_delay - elapsed)
         self._last_request = time.time()
 
-    def analyze(self, epic, df, sentiment_data=None, rule_signal=None):
+    def analyze(self, epic, df, sentiment_data=None, rule_signal=None, regime_data=None):
         """Analyze market data using Claude and return a trading signal.
 
         Args:
@@ -72,7 +84,7 @@ class AIAnalyst:
             df: DataFrame with calculated indicators
             sentiment_data: Optional dict from CryptoPanic/Reddit sentiment
             rule_signal: Optional dict with rule-based bot's signal
-                         {"signal": "BUY/SELL/HOLD", "score": int, "reasons": [...], "details": {...}}
+            regime_data: Optional dict with {"regime": str, "adx": float}
 
         Returns:
             (signal, details) tuple - same format as SignalEngine.get_signal()
@@ -81,7 +93,7 @@ class AIAnalyst:
             return "HOLD", {"reason": "Insufficient data for AI analysis"}
 
         latest = df.iloc[-1]
-        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal)
+        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal, regime_data=regime_data)
 
         try:
             self._rate_limit()
@@ -120,6 +132,8 @@ class AIAnalyst:
                 "ai_model": self.model,
                 "signal_strength": confidence,
                 "zone": self._get_zone(latest.get("range_position", 50)),
+                "regime": regime_data.get("regime") if regime_data else None,
+                "adx": regime_data.get("adx", 0) if regime_data else 0,
             }
 
             # Boost confidence when rule-based bot agrees
@@ -169,7 +183,7 @@ class AIAnalyst:
             return "SELL_ZONE"
         return "NEUTRAL"
 
-    def _build_prompt(self, epic, df, sentiment_data=None, rule_signal=None):
+    def _build_prompt(self, epic, df, sentiment_data=None, rule_signal=None, regime_data=None):
         """Build the analysis prompt with all market data."""
         latest = df.iloc[-1]
 
@@ -199,6 +213,8 @@ class AIAnalyst:
         roc_6 = latest.get("roc_6", 0)
         bullish_engulfing = "YES" if latest.get("bullish_engulfing", False) else "NO"
         bearish_engulfing = "YES" if latest.get("bearish_engulfing", False) else "NO"
+        macd_hist = latest.get("macd_histogram", 0)
+        volume_ratio = latest.get("volume_ratio", 1.0)
 
         prompt = f"""Analyze {epic} for a potential trade:
 
@@ -213,7 +229,8 @@ TECHNICAL INDICATORS:
 - Bollinger Band %B: {bb_pct:.2f} (0=lower band, 1=upper band)
 - VWAP: {vwap:.4f} (price {'above' if latest['close'] > vwap else 'below'} VWAP)
 - ATR: {atr_pct:.2f}% (volatility)
-- Volume spike: {volume_spike}
+- MACD Histogram: {macd_hist:.4f} ({'positive' if macd_hist > 0 else 'negative'})
+- Volume spike: {volume_spike} (ratio: {volume_ratio:.1f}x)
 - Momentum (3 candles): {roc_3:+.2f}%
 - Momentum (6 candles): {roc_6:+.2f}%
 - Bullish engulfing: {bullish_engulfing}
@@ -225,13 +242,33 @@ RESISTANCE: {latest.get('resistance', 'N/A')}
 RECENT CANDLES (15min each, newest last):
 {candles_text}"""
 
+        # Add regime data
+        if regime_data:
+            regime = regime_data.get("regime", "UNKNOWN")
+            adx = regime_data.get("adx", 0)
+            prompt += f"""
+MARKET REGIME: {regime} (ADX: {adx:.1f})
+- ADX > 25 = trending, < 20 = ranging, 20-25 = neutral
+- Current regime implications: """
+            if regime == "RANGING":
+                prompt += "Mean-reversion strategies optimal. Trade with confidence."
+            elif regime == "TRENDING_UP":
+                prompt += "Favor BUY signals. SELL signals need extra confirmation."
+            elif regime == "TRENDING_DOWN":
+                prompt += "Favor SELL signals. BUY signals need extra confirmation."
+            else:
+                prompt += "Unclear direction. Only trade with strong technical confirmation."
+            prompt += "\n"
+        else:
+            prompt += "\nMARKET REGIME: Not available\n"
+
         # Add sentiment if available
         has_sentiment = sentiment_data and (
             sentiment_data.get("total_posts", 0) > 0 or sentiment_data.get("fear_greed")
         )
         if has_sentiment:
             prompt += f"""
-NEWS SENTIMENT:
+NEWS SENTIMENT (SUPPLEMENTARY - require 3+ technical confirmations):
 - Sentiment score: {sentiment_data['score']}/100 ({sentiment_data['label']})
 - Bullish weight: {sentiment_data['bullish_weight']}
 - Bearish weight: {sentiment_data['bearish_weight']}"""
@@ -269,13 +306,13 @@ RULE-BASED BOT SIGNAL:
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt
 
-    def generate_report(self, epic, df, sentiment_data=None, rule_signal=None):
+    def generate_report(self, epic, df, sentiment_data=None, rule_signal=None, regime_data=None):
         """Generate a detailed analysis report explaining the reasoning step by step."""
         if df is None or len(df) < 50:
             return "Ikke nok data til rapport."
 
         latest = df.iloc[-1]
-        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal)
+        prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal, regime_data=regime_data)
 
         report_system = """You are an expert crypto trading analyst writing a detailed report in Danish.
 
@@ -295,22 +332,27 @@ Dato: {current date/time}
 - EMA 9/21: hvad er trenden?
 - Bollinger Bands: hvor er prisen i forhold til baandene?
 - VWAP: er prisen over eller under?
+- MACD: hvad viser histogrammet?
 - Volume: er der udsving?
 
-3. PRICE ACTION
+3. MARKEDSREGIME
+- Er markedet trending eller ranging?
+- Hvad betyder det for strategien?
+
+4. PRICE ACTION
 - Beskriv de seneste candles
 - Er der reversal-moenstre (engulfing, bounce)?
 - Hvad er momentum-retningen?
 
-4. SENTIMENT
+5. SENTIMENT
 - Hvad siger nyhederne?
 - Er markedet bullish eller bearish?
 
-5. REGEL-BOT SAMMENLIGNING
+6. REGEL-BOT SAMMENLIGNING
 - Hvad siger den regelbaserede bot?
 - Er I enige eller uenige? Hvorfor?
 
-6. KONKLUSION
+7. KONKLUSION
 - Samlet vurdering
 - Signal: BUY / SELL / HOLD
 - Confidence: X/10
