@@ -4,6 +4,11 @@
 {% block content %}
 <h1>Trades{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
+<div class="chart-card" style="margin-bottom: 1.5rem;">
+    <h3>Balance</h3>
+    <canvas id="balanceChart"></canvas>
+</div>
+
 <div class="filters">
     <select id="filterStatus" onchange="loadTrades()">
         <option value="">Alle status</option>
@@ -41,6 +46,15 @@
 
 {% block scripts %}
 <script>
+    let balanceChart;
+
+    async function loadBalance() {
+        const resp = await fetch(apiUrl('/api/balance'));
+        const data = await resp.json();
+        if (balanceChart) balanceChart.destroy();
+        balanceChart = createLineChart('balanceChart', data.timestamps, data.balances, 'Balance (EUR)', '#00d4aa');
+    }
+
     async function loadTrades() {
         const status = document.getElementById('filterStatus').value;
         const direction = document.getElementById('filterDirection').value;
@@ -75,6 +89,7 @@
         return d.toLocaleDateString('da-DK') + ' ' + d.toLocaleTimeString('da-DK', {hour:'2-digit', minute:'2-digit'});
     }
 
+    loadBalance();
     loadTrades();
 </script>
 {% endblock %}
