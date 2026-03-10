@@ -152,7 +152,7 @@ class PositionWatchdog:
                     f"TP {current_tp:.5f} -> {new_tp:.5f}"
                 )
 
-                result = self.client.update_position(deal_id, take_profit=new_tp)
+                result = self.client.update_position(deal_id, stop_loss=current_sl, take_profit=new_tp)
                 if result:
                     self.notifier.send(
                         f"🔧 <b>R:R Fix: {epic}</b>\n"
