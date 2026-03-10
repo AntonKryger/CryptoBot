@@ -100,9 +100,76 @@ class PositionWatchdog:
         if confidence is not None:
             self._entry_confidence[deal_id] = confidence
 
+    def fix_open_positions_rr(self):
+        """Fix R:R on all open positions - move TP to ensure min 1.5:1 R:R.
+
+        Called at startup to fix positions opened with old bad R:R settings.
+        """
+        try:
+            positions = self.client.get_positions()
+            if not positions:
+                return
+            for pos in positions.get("positions", []):
+                market = pos.get("market", {})
+                position = pos.get("position", {})
+                epic = market.get("epic", "?")
+                deal_id = position.get("dealId", "")
+                direction = position.get("direction", "BUY")
+                entry_price = float(position.get("level", 0))
+                current_sl = position.get("stopLevel")
+                current_tp = position.get("profitLevel")
+
+                if not entry_price or not current_sl or not current_tp:
+                    continue
+
+                current_sl = float(current_sl)
+                current_tp = float(current_tp)
+
+                # Calculate current R:R
+                sl_distance = abs(entry_price - current_sl)
+                tp_distance = abs(current_tp - entry_price)
+
+                if sl_distance == 0:
+                    continue
+
+                rr_ratio = tp_distance / sl_distance
+
+                if rr_ratio >= 1.5:
+                    logger.info(f"[R:R Fix] {epic}: R:R already OK ({rr_ratio:.2f}:1)")
+                    continue
+
+                # Calculate new TP with 1.5:1 R:R
+                new_tp_distance = sl_distance * 1.5
+                if direction == "BUY":
+                    new_tp = round(entry_price + new_tp_distance, 5)
+                else:
+                    new_tp = round(entry_price - new_tp_distance, 5)
+
+                new_rr = new_tp_distance / sl_distance
+
+                logger.info(
+                    f"[R:R Fix] {epic}: R:R {rr_ratio:.2f}:1 -> {new_rr:.2f}:1 | "
+                    f"TP {current_tp:.5f} -> {new_tp:.5f}"
+                )
+
+                result = self.client.update_position(deal_id, take_profit=new_tp)
+                if result:
+                    self.notifier.send(
+                        f"🔧 <b>R:R Fix: {epic}</b>\n"
+                        f"TP: {current_tp:.2f} → {new_tp:.2f}\n"
+                        f"R:R: {rr_ratio:.2f}:1 → {new_rr:.2f}:1"
+                    )
+                else:
+                    logger.error(f"[R:R Fix] Failed to update {epic} TP")
+
+        except Exception as e:
+            logger.error(f"[R:R Fix] Error: {e}")
+
     def start(self):
         """Start the watchdog background thread."""
         self._running = True
+        # Fix R:R on existing positions before starting monitor loop
+        self.fix_open_positions_rr()
         self._thread = threading.Thread(target=self._watch_loop, daemon=True)
         self._thread.start()
         logger.info("Position watchdog started")
