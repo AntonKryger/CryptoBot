@@ -119,44 +119,72 @@ class PositionWatchdog:
                 current_sl = position.get("stopLevel")
                 current_tp = position.get("profitLevel")
 
-                if not entry_price or not current_sl or not current_tp:
+                if not entry_price:
                     continue
 
-                current_sl = float(current_sl)
-                current_tp = float(current_tp)
+                current_sl = float(current_sl) if current_sl else None
+                current_tp = float(current_tp) if current_tp else None
 
-                # Calculate current R:R
-                sl_distance = abs(entry_price - current_sl)
-                tp_distance = abs(current_tp - entry_price)
+                # If SL or TP is missing, recalculate from ATR
+                atr_pct = self._atr_cache.get(epic, 0)
+                needs_update = False
+                new_sl = current_sl
+                new_tp = current_tp
+
+                if not current_sl:
+                    # SL missing - recalculate using ATR or default 3%
+                    if atr_pct > 0:
+                        new_sl = self.risk.calculate_atr_stop_loss(entry_price, direction, atr_pct)
+                    else:
+                        sl_pct = 3.0  # safe default
+                        if direction == "BUY":
+                            new_sl = round(entry_price * (1 - sl_pct / 100), 5)
+                        else:
+                            new_sl = round(entry_price * (1 + sl_pct / 100), 5)
+                    needs_update = True
+                    logger.warning(f"[R:R Fix] {epic}: SL was MISSING! Setting SL={new_sl:.5f}")
+
+                if not current_tp:
+                    # TP missing - recalculate
+                    new_tp = self.risk.calculate_take_profit(entry_price, direction, atr_pct, sl_price=new_sl)
+                    needs_update = True
+                    logger.warning(f"[R:R Fix] {epic}: TP was MISSING! Setting TP={new_tp:.5f}")
+
+                # Check R:R ratio
+                sl_distance = abs(entry_price - new_sl)
+                tp_distance = abs(new_tp - entry_price)
 
                 if sl_distance == 0:
                     continue
 
                 rr_ratio = tp_distance / sl_distance
 
-                if rr_ratio >= 1.5:
+                if rr_ratio < 1.5:
+                    new_tp_distance = sl_distance * 1.5
+                    if direction == "BUY":
+                        new_tp = round(entry_price + new_tp_distance, 5)
+                    else:
+                        new_tp = round(entry_price - new_tp_distance, 5)
+                    needs_update = True
+                    new_rr = 1.5
+                    logger.info(
+                        f"[R:R Fix] {epic}: R:R {rr_ratio:.2f}:1 -> {new_rr:.2f}:1 | "
+                        f"TP {current_tp} -> {new_tp:.5f}"
+                    )
+                else:
+                    new_rr = rr_ratio
+
+                if not needs_update:
                     logger.info(f"[R:R Fix] {epic}: R:R already OK ({rr_ratio:.2f}:1)")
                     continue
 
-                # Calculate new TP with 1.5:1 R:R
-                new_tp_distance = sl_distance * 1.5
-                if direction == "BUY":
-                    new_tp = round(entry_price + new_tp_distance, 5)
-                else:
-                    new_tp = round(entry_price - new_tp_distance, 5)
-
-                new_rr = new_tp_distance / sl_distance
-
-                logger.info(
-                    f"[R:R Fix] {epic}: R:R {rr_ratio:.2f}:1 -> {new_rr:.2f}:1 | "
-                    f"TP {current_tp:.5f} -> {new_tp:.5f}"
-                )
-
-                result = self.client.update_position(deal_id, stop_loss=current_sl, take_profit=new_tp)
+                result = self.client.update_position(deal_id, stop_loss=new_sl, take_profit=new_tp)
                 if result:
+                    sl_str = f"SL: {current_sl} → {new_sl:.2f}\n" if current_sl != new_sl else ""
+                    tp_str = f"TP: {current_tp} → {new_tp:.2f}\n" if current_tp != new_tp else ""
                     self.notifier.send(
                         f"🔧 <b>R:R Fix: {epic}</b>\n"
-                        f"TP: {current_tp:.2f} → {new_tp:.2f}\n"
+                        f"{sl_str}{tp_str}"
                         f"R:R: {rr_ratio:.2f}:1 → {new_rr:.2f}:1"
                     )
                 else:
