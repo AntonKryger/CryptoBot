@@ -24,6 +24,11 @@
     <div class="kpi-card">
         <div class="kpi-label">Trades</div>
         <div class="kpi-value">{{ data.closed_trades }} lukket / {{ data.open_trades }} aaben</div>
+        {% if data.closed_with_pl == 0 and data.closed_trades > 0 %}
+        <div style="font-size:0.7rem;color:#ffa502;margin-top:0.3rem">P&L mangler for {{ data.closed_trades }} gamle trades</div>
+        {% elif data.closed_with_pl < data.closed_trades %}
+        <div style="font-size:0.7rem;color:#ffa502;margin-top:0.3rem">P&L for {{ data.closed_with_pl }}/{{ data.closed_trades }}</div>
+        {% endif %}
     </div>
     <div class="kpi-card">
         <div class="kpi-label">Profit Factor</div>

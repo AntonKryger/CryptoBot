@@ -277,9 +277,21 @@ class StatsEngine:
 
         df = df.sort_values("timestamp", ascending=False).head(limit)
 
-        # Convert NaN to None for JSON serialization
-        result = df.where(df.notna(), None).to_dict(orient="records")
-        return result
+        # Convert to records, replacing NaN/NaT with None for valid JSON
+        import math
+        records = df.to_dict(orient="records")
+        for rec in records:
+            for key, val in rec.items():
+                if val is None:
+                    continue
+                if isinstance(val, float) and math.isnan(val):
+                    rec[key] = None
+                elif hasattr(val, 'isoformat'):  # NaT check
+                    try:
+                        str(val)
+                    except Exception:
+                        rec[key] = None
+        return records
 
     def get_balance_history(self, bot_name=None, hours=168):
         """Get balance history for chart."""
