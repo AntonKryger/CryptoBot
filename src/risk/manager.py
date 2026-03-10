@@ -64,7 +64,7 @@ class RiskManager:
         self.daily_start_balance = balance
         self.daily_reset_date = datetime.now().date()
         self.kill_switch_active = False
-        logger.info(f"Risk manager initialized. Balance: €{balance:.2f}")
+        logger.info(f"Risk manager initialized. Balance: EUR {balance:.2f}")
 
     def check_kill_switch(self, current_balance):
         """Check if kill switch should activate."""
@@ -79,7 +79,7 @@ class RiskManager:
             if daily_loss >= self.daily_loss_limit:
                 self.kill_switch_active = True
                 logger.critical(f"KILL SWITCH: Daily loss limit hit ({daily_loss:.1f}%)")
-                return True, f"Dagligt tab: {daily_loss:.1f}% (grænse: {self.daily_loss_limit}%)"
+                return True, f"Dagligt tab: {daily_loss:.1f}% (graense: {self.daily_loss_limit}%)"
 
         # Total loss check
         if self.initial_balance and self.initial_balance > 0:
@@ -87,7 +87,7 @@ class RiskManager:
             if total_loss >= self.total_loss_limit:
                 self.kill_switch_active = True
                 logger.critical(f"KILL SWITCH: Total loss limit hit ({total_loss:.1f}%)")
-                return True, f"Totalt tab: {total_loss:.1f}% (grænse: {self.total_loss_limit}%)"
+                return True, f"Totalt tab: {total_loss:.1f}% (graense: {self.total_loss_limit}%)"
 
         return False, None
 
@@ -122,32 +122,21 @@ class RiskManager:
         return RULE_SCORE_TO_CONFIDENCE.get(min(rule_score, 10), 6)
 
     def allocate_capital(self, signals, available_balance):
-        """Allocate capital across multiple signals weighted by confidence.
-
-        Args:
-            signals: list of (epic, signal, confidence, details) tuples
-            available_balance: EUR available for new positions
-
-        Returns:
-            list of (epic, signal, allocated_amount, details) tuples
-        """
+        """Allocate capital across multiple signals weighted by confidence."""
         if not signals:
             return []
 
-        # Determine max exposure based on highest confidence
         max_confidence = max(s[2] for s in signals)
         if max_confidence >= 9:
-            exposure_pct = 100  # allow full exposure for high confidence
+            exposure_pct = 100
         else:
             exposure_pct = self.max_total_exposure_pct
 
         max_total = available_balance * (exposure_pct / 100)
         remaining = max_total
 
-        # Sort by confidence (highest first)
         signals = sorted(signals, key=lambda s: s[2], reverse=True)
 
-        # Calculate total confidence weight
         total_weight = sum(s[2] for s in signals)
         if total_weight == 0:
             return []
@@ -157,25 +146,19 @@ class RiskManager:
             if remaining <= 0:
                 break
 
-            # Max for this coin's category
             max_for_coin = available_balance * (self.get_max_allocation_pct(epic) / 100)
-            # Min position size
             min_amount = available_balance * (self.min_position_pct / 100)
 
-            # Confidence-weighted share of remaining capital
             weight_share = confidence / total_weight
             ideal_amount = max_total * weight_share
 
-            # Apply confidence multiplier (reduces size for low confidence)
             conf_mult = self.get_confidence_multiplier(confidence)
             ideal_amount *= conf_mult
 
-            # Clamp to category max
             amount = min(ideal_amount, max_for_coin, remaining)
 
-            # Skip if too small
             if amount < min_amount:
-                logger.info(f"Allocation {epic}: skipped (€{amount:.0f} < min €{min_amount:.0f})")
+                logger.info(f"Allocation {epic}: skipped (EUR {amount:.0f} < min EUR {min_amount:.0f})")
                 continue
 
             remaining -= amount
@@ -183,7 +166,7 @@ class RiskManager:
 
             cat = self.get_coin_category(epic)
             logger.info(
-                f"Allocation {epic} ({cat}): €{amount:.0f} "
+                f"Allocation {epic} ({cat}): EUR {amount:.0f} "
                 f"(conf={confidence}, mult={conf_mult:.0%}, max={self.get_max_allocation_pct(epic)}%)"
             )
 
@@ -199,22 +182,12 @@ class RiskManager:
         """Calculate fixed percentage stop-loss price (fallback for manual trades)."""
         if direction == "BUY":
             return round(entry_price * (1 - self.stop_loss_pct / 100), 2)
-        else:  # SELL (short)
+        else:
             return round(entry_price * (1 + self.stop_loss_pct / 100), 2)
 
     def calculate_atr_stop_loss(self, entry_price, direction, atr_pct):
-        """Calculate ATR-based stop-loss price.
-
-        Args:
-            entry_price: Position entry price
-            direction: 'BUY' or 'SELL'
-            atr_pct: ATR as percentage of price
-
-        Returns:
-            Stop-loss price level
-        """
+        """Calculate ATR-based stop-loss price."""
         raw_sl_pct = atr_pct * self.atr_sl_multiplier
-        # Clamp to [min, max] range
         sl_pct = max(self.atr_sl_min_pct, min(self.atr_sl_max_pct, raw_sl_pct))
 
         if direction == "BUY":
@@ -223,7 +196,7 @@ class RiskManager:
             sl = entry_price * (1 + sl_pct / 100)
 
         logger.info(
-            f"ATR SL: atr={atr_pct:.2f}% × {self.atr_sl_multiplier} = "
+            f"ATR SL: atr={atr_pct:.2f}% x {self.atr_sl_multiplier} = "
             f"{raw_sl_pct:.2f}% -> clamped to {sl_pct:.2f}% -> SL={sl:.4f}"
         )
         return round(sl, 5)
@@ -231,16 +204,15 @@ class RiskManager:
     def calculate_take_profit(self, entry_price, direction, atr_pct=0):
         """Calculate take-profit price.
 
-        Grid-inspired: Use 1.5×ATR for TP (typically 3-5%) instead of fixed 7%.
+        Grid-inspired: Use 1.5x ATR for TP (typically 3-5%) instead of fixed 7%.
         This gives realistic, achievable targets that get hit regularly.
         Falls back to fixed TP if ATR not available.
         """
         if atr_pct > 0:
-            # Grid-style TP: 1.5× ATR, clamped to [1.5%, 6.0%]
             raw_tp_pct = atr_pct * 1.5
             tp_pct = max(1.5, min(6.0, raw_tp_pct))
             logger.info(
-                f"ATR TP: atr={atr_pct:.2f}% × 1.5 = {raw_tp_pct:.2f}% -> "
+                f"ATR TP: atr={atr_pct:.2f}% x 1.5 = {raw_tp_pct:.2f}% -> "
                 f"clamped to {tp_pct:.2f}%"
             )
         else:
@@ -248,7 +220,7 @@ class RiskManager:
 
         if direction == "BUY":
             return round(entry_price * (1 + tp_pct / 100), 5)
-        else:  # SELL (short)
+        else:
             return round(entry_price * (1 - tp_pct / 100), 5)
 
     def should_move_trailing_stop(self, entry_price, current_price, direction):
@@ -270,7 +242,7 @@ class RiskManager:
             return False, reason
 
         if open_positions_count >= self.max_open_positions:
-            return False, f"Max positioner nået ({self.max_open_positions})"
+            return False, f"Max positioner naaet ({self.max_open_positions})"
 
         return True, None
 

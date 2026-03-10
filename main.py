@@ -19,7 +19,7 @@ from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
 
-# ── Logging setup ───────────────────────────────────────────────────
+# -- Logging setup --
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -72,7 +72,7 @@ class CryptoBot:
         # Get initial balance
         balance = self.client.get_account_balance()
         if balance:
-            logger.info(f"Balance: €{balance['balance']:.2f}")
+            logger.info(f"Balance: EUR {balance['balance']:.2f}")
             self.risk.initialize(balance["balance"])
         else:
             logger.error("Kunne ikke hente balance")
@@ -81,7 +81,7 @@ class CryptoBot:
         self.notifier.send(
             f"🤖 <b>CryptoBot startet</b>\n"
             f"Mode: {'DEMO' if self.config['capital']['demo'] else 'LIVE'}\n"
-            f"Balance: €{balance['balance']:.2f}\n"
+            f"Balance: EUR {balance['balance']:.2f}\n"
             f"Coins: {len(self.coins)}\n"
             f"Profil: {self.config['risk'].get('profile', 'custom')}\n\n"
             f"Kommandoer: /status /trades /stop /help"
@@ -142,7 +142,7 @@ class CryptoBot:
 
         can_trade, reason = self.risk.can_open_position(len(open_positions), current_balance, current_balance)
         if not can_trade:
-            logger.info(f"Kan ikke åbne flere positioner: {reason}")
+            logger.info(f"Kan ikke aabne flere positioner: {reason}")
             return
 
         # Check if markets are open
@@ -154,19 +154,19 @@ class CryptoBot:
         available = balance.get("available", current_balance)
         logger.info(f"Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
 
-        # ── PASS 1: Analyze all coins, collect trade signals ──
+        # -- PASS 1: Analyze all coins, collect trade signals --
         trade_signals = []
 
         for epic in self.coins:
             try:
                 if epic in open_epics:
-                    logger.info(f"{epic}: Allerede åben position, springer over")
+                    logger.info(f"{epic}: Allerede aaben position, springer over")
                     continue
 
                 # Skip if on cooldown
                 if epic in self.executor._recently_traded:
                     last = self.executor._recently_traded[epic]
-                    elapsed = (__import__('datetime').datetime.now() - last).total_seconds()
+                    elapsed = (datetime.now() - last).total_seconds()
                     if elapsed < self.executor._trade_cooldown:
                         logger.info(f"{epic}: Cooldown ({int(self.executor._trade_cooldown - elapsed)}s)")
                         continue
@@ -189,14 +189,15 @@ class CryptoBot:
                     # Map rule-bot score to confidence for capital allocation
                     confidence = self.risk.map_rule_score_to_confidence(strength)
                     trade_signals.append((epic, signal_type, confidence, details))
-                    logger.info(f"{epic}: {signal_type} (styrke: {strength}, conf: {confidence}) -> til allokering")
+                    signal_mode = details.get("signal_type", "RANGE")
+                    logger.info(f"{epic}: {signal_type} [{signal_mode}] (styrke: {strength}, conf: {confidence}) -> til allokering")
                 else:
                     logger.info(f"{epic}: HOLD ({details.get('reason', '')[:60]})")
 
             except Exception as e:
                 logger.error(f"Fejl ved scanning af {epic}: {e}")
 
-        # ── PASS 2: Allocate capital and execute trades ──
+        # -- PASS 2: Allocate capital and execute trades --
         if not trade_signals:
             logger.info("Ingen trade-signaler denne runde")
             return
@@ -217,7 +218,8 @@ class CryptoBot:
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
 
                 cat = self.risk.get_coin_category(epic)
-                logger.info(f"Executing {signal_type} {epic} ({cat}): size={size}, alloc=EUR {allocated_amount:.0f}")
+                signal_mode = details.get("signal_type", "RANGE")
+                logger.info(f"Executing {signal_type} {epic} ({cat}, {signal_mode}): size={size}, alloc=EUR {allocated_amount:.0f}")
 
                 result = self.client.create_position(
                     epic=epic,
@@ -230,7 +232,7 @@ class CryptoBot:
                 if result:
                     self.executor._log_trade(epic, signal_type, size, current_price,
                                              stop_loss, take_profit, result, details)
-                    self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                    self.executor._recently_traded[epic] = datetime.now()
                     self.notifier.notify_trade(signal_type, epic, size, current_price,
                                                stop_loss, take_profit, details)
 
@@ -238,8 +240,7 @@ class CryptoBot:
                 logger.error(f"Trade execution failed for {epic}: {e}")
 
     def _handle_cycle_trade(self, epic, suggested_direction):
-        """Grid-style cycle trading: after watchdog closes a position, check for reversal.
-        Runs signal analysis and opens opposite direction if signal is strong enough."""
+        """Grid-style cycle trading: after watchdog closes a position, check for reversal."""
         try:
             prices = self.client.get_prices(epic, resolution=self.timeframe)
             df = self.signals.prepare_dataframe(prices)
@@ -250,12 +251,12 @@ class CryptoBot:
 
             # Only enter if signal matches suggested direction and is strong enough
             if signal_type != suggested_direction:
-                logger.info(f"[Cycle] {epic}: Signal is {signal_type}, not {suggested_direction} — skip")
+                logger.info(f"[Cycle] {epic}: Signal is {signal_type}, not {suggested_direction} -- skip")
                 return
 
             strength = details.get("signal_strength", 0)
             if strength < 5:  # Need at least moderate signal
-                logger.info(f"[Cycle] {epic}: Signal too weak ({strength}) — skip")
+                logger.info(f"[Cycle] {epic}: Signal too weak ({strength}) -- skip")
                 return
 
             confidence = self.risk.map_rule_score_to_confidence(strength)
@@ -285,13 +286,14 @@ class CryptoBot:
             if result:
                 self.executor._log_trade(epic, signal_type, size, current_price,
                                          stop_loss, take_profit, result, details)
-                self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                self.executor._recently_traded[epic] = datetime.now()
                 deal_id = result.get("dealReference") or result.get("dealId", "")
                 self.watchdog.track_entry(deal_id, epic)
 
+                signal_mode = details.get("signal_type", "RANGE")
                 self.notifier.send(
                     f"🔄 <b>Cycle trade: {epic}</b>\n"
-                    f"{'🟢 LONG' if signal_type == 'BUY' else '🔴 SHORT'}\n"
+                    f"{'🟢 LONG' if signal_type == 'BUY' else '🔴 SHORT'} [{signal_mode}]\n"
                     f"Signal styrke: {strength} (conf: {confidence})\n"
                     f"Pris: EUR {current_price:.4f}\n"
                     f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}"
@@ -326,24 +328,24 @@ class CryptoBot:
             daily_pl = balance["balance"] - self.risk.daily_start_balance
 
         msg = f"📊 <b>CryptoBot Status</b>\n\n"
-        msg += f"💰 Balance: €{balance['balance']:.2f}\n"
-        msg += f"📈 Daglig P/L: €{daily_pl:+.2f}\n"
-        msg += f"🔄 Åbne positioner: {len(open_pos)}/{self.risk.max_open_positions}\n\n"
+        msg += f"💰 Balance: EUR {balance['balance']:.2f}\n"
+        msg += f"📈 Daglig P/L: EUR {daily_pl:+.2f}\n"
+        msg += f"🔄 Aabne positioner: {len(open_pos)}/{self.risk.max_open_positions}\n\n"
 
         if open_pos:
-            msg += "<b>Åbne positioner:</b>\n"
+            msg += "<b>Aabne positioner:</b>\n"
             for pos in open_pos:
                 epic = pos["market"]["epic"]
                 direction = pos["position"]["direction"]
                 pl = pos["position"].get("profit", 0)
                 emoji = "🟢" if direction == "BUY" else "🔴"
-                msg += f"  {emoji} {epic} ({direction}) P/L: €{pl:+.2f}\n"
+                msg += f"  {emoji} {epic} ({direction}) P/L: EUR {pl:+.2f}\n"
             msg += "\n"
 
         msg += f"<b>Statistik:</b>\n"
         msg += f"  Handler i alt: {stats['total_trades']}\n"
         msg += f"  Win rate: {stats['win_rate']}%\n"
-        msg += f"  Total P/L: €{stats['total_pl']:+.2f}"
+        msg += f"  Total P/L: EUR {stats['total_pl']:+.2f}"
 
         return msg
 
@@ -365,9 +367,9 @@ class CryptoBot:
                 status_emoji = "⏳"
 
             msg += f"{status_emoji} {emoji} {t['epic']} {direction}\n"
-            msg += f"   Pris: €{t['entry_price']:.2f}"
+            msg += f"   Pris: EUR {t['entry_price']:.2f}"
             if t.get("profit_loss") is not None:
-                msg += f" | P/L: €{t['profit_loss']:+.2f}"
+                msg += f" | P/L: EUR {t['profit_loss']:+.2f}"
             msg += f" | {t['status']}\n"
 
         return msg
@@ -381,16 +383,15 @@ class CryptoBot:
         try:
             size = float(args[1])
         except ValueError:
-            return f"Ugyldig størrelse: {args[1]}"
+            return f"Ugyldig stoerrelse: {args[1]}"
 
         # Check for duplicate position
         positions = self.client.get_positions()
         for pos in positions.get("positions", []):
             if pos["market"]["epic"] == epic:
-                return f"⚠️ Du har allerede en åben position i {epic}.\nBrug /close {epic} først."
+                return f"⚠️ Du har allerede en aaben position i {epic}.\nBrug /close {epic} foerst."
 
         try:
-            # Get current price for stop-loss/take-profit
             prices = self.client.get_prices(epic, resolution="MINUTE_15", max_count=5)
             candles = prices.get("prices", [])
             if candles:
@@ -408,21 +409,21 @@ class CryptoBot:
             )
             deal_ref = result.get("dealReference", "ukendt")
 
-            price_str = f"€{current_price:.2f}" if current_price else "afventer"
-            sl_str = f"€{stop_loss:.2f}" if stop_loss else "N/A"
-            tp_str = f"€{take_profit:.2f}" if take_profit else "N/A"
+            price_str = f"EUR {current_price:.2f}" if current_price else "afventer"
+            sl_str = f"EUR {stop_loss:.2f}" if stop_loss else "N/A"
+            tp_str = f"EUR {take_profit:.2f}" if take_profit else "N/A"
             logger.info(f"Manual BUY via Telegram: {epic} x{size} @ {price_str}")
 
             return (
-                f"🟢 <b>KØBT: {epic}</b>\n"
-                f"Størrelse: {size}\n"
+                f"🟢 <b>KOEBT: {epic}</b>\n"
+                f"Stoerrelse: {size}\n"
                 f"Pris: {price_str}\n"
                 f"Stop-loss: {sl_str}\n"
                 f"Take-profit: {tp_str}\n"
                 f"Deal: {deal_ref}"
             )
         except Exception as e:
-            return f"Fejl ved køb: {e}"
+            return f"Fejl ved koeb: {e}"
 
     def _cmd_sell(self, args=None):
         """Handle /sell EPIC SIZE command."""
@@ -433,16 +434,14 @@ class CryptoBot:
         try:
             size = float(args[1])
         except ValueError:
-            return f"Ugyldig størrelse: {args[1]}"
+            return f"Ugyldig stoerrelse: {args[1]}"
 
-        # Check for duplicate position
         positions = self.client.get_positions()
         for pos in positions.get("positions", []):
             if pos["market"]["epic"] == epic:
-                return f"⚠️ Du har allerede en åben position i {epic}.\nBrug /close {epic} først."
+                return f"⚠️ Du har allerede en aaben position i {epic}.\nBrug /close {epic} foerst."
 
         try:
-            # Get current price for stop-loss/take-profit
             prices = self.client.get_prices(epic, resolution="MINUTE_15", max_count=5)
             candles = prices.get("prices", [])
             if candles:
@@ -460,14 +459,14 @@ class CryptoBot:
             )
             deal_ref = result.get("dealReference", "ukendt")
 
-            price_str = f"€{current_price:.2f}" if current_price else "afventer"
-            sl_str = f"€{stop_loss:.2f}" if stop_loss else "N/A"
-            tp_str = f"€{take_profit:.2f}" if take_profit else "N/A"
+            price_str = f"EUR {current_price:.2f}" if current_price else "afventer"
+            sl_str = f"EUR {stop_loss:.2f}" if stop_loss else "N/A"
+            tp_str = f"EUR {take_profit:.2f}" if take_profit else "N/A"
             logger.info(f"Manual SELL via Telegram: {epic} x{size} @ {price_str}")
 
             return (
                 f"🔴 <b>SHORTET: {epic}</b>\n"
-                f"Størrelse: {size}\n"
+                f"Stoerrelse: {size}\n"
                 f"Pris: {price_str}\n"
                 f"Stop-loss: {sl_str}\n"
                 f"Take-profit: {tp_str}\n"
@@ -477,14 +476,13 @@ class CryptoBot:
             return f"Fejl ved salg: {e}"
 
     def _cmd_close(self, args=None):
-        """Handle /close [EPIC|ALL] command. Close specific or all positions."""
+        """Handle /close [EPIC|ALL] command."""
         positions = self.client.get_positions()
         open_pos = positions.get("positions", [])
 
         if not open_pos:
-            return "Ingen åbne positioner at lukke."
+            return "Ingen aabne positioner at lukke."
 
-        # No args - show menu
         if not args:
             msg = "Hvilken position vil du lukke?\n\n"
             for pos in open_pos:
@@ -496,7 +494,6 @@ class CryptoBot:
             msg += "\n  /close ALL - Luk alle"
             return msg
 
-        # Close ALL
         if args[0].upper() == "ALL":
             closed = 0
             errors = []
@@ -515,11 +512,10 @@ class CryptoBot:
                 msg += f"\n\n⚠️ Fejl:\n" + "\n".join(errors)
             return msg
 
-        # Close specific epic
         epic_filter = args[0].upper()
         targets = [p for p in open_pos if p["market"]["epic"] == epic_filter]
         if not targets:
-            return f"Ingen åben position i {epic_filter}."
+            return f"Ingen aaben position i {epic_filter}."
 
         closed_epics = []
         for pos in targets:
@@ -580,12 +576,17 @@ class CryptoBot:
                     sent_emoji = "🐂" if s >= 55 else "🐻" if s <= 45 else "😐"
                     sent_str = f" | {sent_emoji}{s:.0f}"
 
+                # Regime indicator
+                regime = details.get("regime", "")
+                regime_str = f" | {regime}" if regime else ""
+
                 msg += f"{emoji} <b>{epic}</b> {bar}\n"
-                msg += f"   Pos: {range_pos:.0f}% | RSI: {rsi:.0f} | Range: {range_pct:.1f}%{sent_str}\n"
+                msg += f"   Pos: {range_pos:.0f}% | RSI: {rsi:.0f} | Range: {range_pct:.1f}%{sent_str}{regime_str}\n"
 
                 if signal_type != "HOLD":
                     strength = details.get("signal_strength", 0)
-                    msg += f"   → {signal_type} (styrke: {strength})\n"
+                    signal_mode = details.get("signal_type", "RANGE")
+                    msg += f"   -> {signal_type} [{signal_mode}] (styrke: {strength})\n"
 
             except Exception as e:
                 msg += f"❓ {epic}: Fejl ({e})\n"
@@ -604,7 +605,6 @@ class CryptoBot:
                 label = sentiment["label"]
                 posts = sentiment["total_posts"]
 
-                # Sentiment bar
                 filled = int(score / 10)
                 bar = "🟢" * filled + "⚪" * (10 - filled)
                 if score < 40:
@@ -616,7 +616,6 @@ class CryptoBot:
                 msg += f"   {bar} {score}/100\n"
                 msg += f"   {label} ({posts} posts)\n"
 
-                # Top mentions
                 if sentiment["top_bullish"]:
                     msg += f"   🟢 {sentiment['top_bullish'][0][:50]}\n"
                 if sentiment["top_bearish"]:
@@ -644,7 +643,7 @@ class CryptoBot:
             "/sentiment - Reddit sentiment (alle coins)\n"
             "/sentiment BTCUSD - Sentiment for specifik coin\n\n"
             "<b>Handel:</b>\n"
-            "/buy EPIC SIZE - Køb (fx /buy SOLUSD 1)\n"
+            "/buy EPIC SIZE - Koeb (fx /buy SOLUSD 1)\n"
             "/sell EPIC SIZE - Short (fx /sell BTCUSD 0.5)\n"
             "/close EPIC - Luk position (fx /close SOLUSD)\n"
             "/close ALL - Luk alle positioner\n\n"
@@ -665,10 +664,10 @@ class CryptoBot:
 
         self.notifier.send(
             f"⏹ <b>CryptoBot stoppet</b>\n"
-            f"Balance: €{balance['balance']:.2f}\n"
+            f"Balance: EUR {balance['balance']:.2f}\n"
             f"Handler i alt: {stats['total_trades']}\n"
             f"Win rate: {stats['win_rate']}%\n"
-            f"Total P/L: €{stats['total_pl']:.2f}"
+            f"Total P/L: EUR {stats['total_pl']:.2f}"
         )
 
         logger.info("CryptoBot stoppet")

@@ -198,15 +198,15 @@ class PositionWatchdog:
         atr_pct = self._atr_cache.get(epic, 2.0)
         trailing_distance = atr_pct * self.trailing_atr_mult
 
-        # ── Rule 1: Max Hold Time ──
+        # -- Rule 1: Max Hold Time --
         if self._check_max_hold_time(deal_id, epic, direction, size, pl_pct):
             return  # Position was closed
 
-        # ── Rule 2: Early Exit (momentum acceleration) ──
+        # -- Rule 2: Early Exit (momentum acceleration) --
         if self._check_early_exit(deal_id, epic, direction, size, pl_pct):
             return  # Position was (partially) closed
 
-        # ── Rule 3: Break-even stop (server-side on Capital.com) ──
+        # -- Rule 3: Break-even stop (server-side on Capital.com) --
         if deal_id not in self._breakeven_set and pl_pct >= self.breakeven_trigger_pct:
             try:
                 self.client.update_position(deal_id, stop_loss=round(entry_price, 5))
@@ -222,15 +222,11 @@ class PositionWatchdog:
             except Exception as e:
                 logger.warning(f"Watchdog: Failed to set break-even for {epic}: {e}")
 
-        # ── Rule 3b: Progressive trailing SL (server-side) ──
-        # After break-even is set, keep moving SL up as price rises
-        # This locks in profit on Capital.com's server (survives bot crash)
+        # -- Rule 3b: Progressive trailing SL (server-side) --
         if deal_id in self._breakeven_set and pl_pct >= self.progressive_sl_trigger:
             self._update_progressive_sl(deal_id, epic, direction, entry_price, current_price, pl_pct, pos)
 
-        # ── Rule 3c: PROFIT PULLBACK CLOSE ──
-        # If position peaked at >= 1.5% and has dropped 0.75% from peak → CLOSE NOW
-        # This is the active profit-taking that prevents giving back gains
+        # -- Rule 3c: PROFIT PULLBACK CLOSE --
         if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= self.pullback_close_pct:
             try:
                 logger.warning(
@@ -251,7 +247,7 @@ class PositionWatchdog:
             except Exception as e:
                 logger.error(f"Watchdog: Profit pullback close failed for {epic}: {e}")
 
-        # ── Rule 4: Partial profit-taking ──
+        # -- Rule 4: Partial profit-taking --
         if deal_id not in self._partial_taken and pl_pct >= self.partial_profit_pct:
             partial_size = round(size * self.partial_close_ratio, 4)
             if partial_size > 0:
@@ -270,10 +266,10 @@ class PositionWatchdog:
                 except Exception as e:
                     logger.error(f"Watchdog: Partial close failed for {epic}: {e}")
 
-        # ── Rule 5: Dynamic Take Profit extension ──
+        # -- Rule 5: Dynamic Take Profit extension --
         self._check_dynamic_tp(deal_id, epic, direction, entry_price, current_price, pl_pct, atr_pct, pos)
 
-        # ── Rule 6: ATR-based trailing stop ──
+        # -- Rule 6: ATR-based trailing stop --
         if pl_pct >= self.trailing_trigger_pct and peak_profit_pct > 0 and drawdown_from_peak_pct > trailing_distance:
             try:
                 logger.warning(
@@ -289,28 +285,24 @@ class PositionWatchdog:
                     f"Drawdown fra top: {drawdown_from_peak_pct:.1f}% (graense: {trailing_distance:.1f}%)\n"
                     f"Profit fra entry: {pl_pct:+.1f}%"
                 )
-                # Cycle trading: check for reversal opportunity
                 self._trigger_cycle_trade(epic, direction, pl_pct)
             except Exception as e:
                 logger.error(f"Watchdog: Trailing close failed for {epic}: {e}")
 
-        # ── Rule 7: Sentiment-based close (bearish hour + profitable long, or bullish hour + profitable short) ──
+        # -- Rule 7: Sentiment-based close --
         if self.time_bias and pl_pct >= 0.5:
             self._check_sentiment_close(deal_id, epic, direction, size, pl_pct)
 
     def _check_sentiment_close(self, deal_id, epic, direction, size, pl_pct):
-        """Close profitable positions when time-of-day bias goes against them.
-        Frees capital for the opposite direction in the next scan cycle."""
+        """Close profitable positions when time-of-day bias goes against them."""
         try:
             bias, avg_return, _ = self.time_bias.get_bias(epic)
         except Exception:
             return
 
-        # Only act on strong bias (not NEUTRAL)
         if bias == "NEUTRAL":
             return
 
-        # Bearish hour + we're long and profitable → close to protect profit
         should_close = False
         if bias == "BEARISH" and direction == "BUY" and pl_pct >= 0.5:
             should_close = True
@@ -320,8 +312,6 @@ class PositionWatchdog:
         if not should_close:
             return
 
-        # Only check every ~5 min per position (avoid repeated attempts)
-        # Use iteration count - only on multiples of 25
         if self._iteration_count % 25 != 0:
             return
 
@@ -344,8 +334,7 @@ class PositionWatchdog:
             logger.error(f"Watchdog: Sentiment close failed for {epic}: {e}")
 
     def _update_progressive_sl(self, deal_id, epic, direction, entry_price, current_price, pl_pct, pos):
-        """Move server-side SL up as position profits grow.
-        Trail = 1.0% behind current price. Only updates if SL moves up by >= 0.3%."""
+        """Move server-side SL up as position profits grow."""
         trail_pct = self.progressive_sl_trail
 
         if direction == "BUY":
@@ -353,19 +342,16 @@ class PositionWatchdog:
         else:
             new_sl = round(current_price * (1 + trail_pct / 100), 5)
 
-        # Check current server SL
         current_sl = pos["position"].get("stopLevel")
         if current_sl is None:
             return
         current_sl = float(current_sl)
 
-        # Only move SL in profitable direction (never loosen it)
         if direction == "BUY" and new_sl <= current_sl:
             return
         if direction == "SELL" and new_sl >= current_sl:
             return
 
-        # Only update if meaningful move (>= 0.3% of entry price) to avoid API spam
         sl_move_pct = abs(new_sl - current_sl) / entry_price * 100
         if sl_move_pct < 0.3:
             return
@@ -374,7 +360,6 @@ class PositionWatchdog:
             self.client.update_position(deal_id, stop_loss=new_sl)
             self._last_sl_update[deal_id] = new_sl
 
-            # Calculate locked profit
             if direction == "BUY":
                 locked_pct = (new_sl - entry_price) / entry_price * 100
             else:
@@ -393,8 +378,7 @@ class PositionWatchdog:
             logger.warning(f"Watchdog: Progressive SL update failed for {epic}: {e}")
 
     def _check_max_hold_time(self, deal_id, epic, direction, size, pl_pct):
-        """Close position if max hold time exceeded AND position is losing or breakeven.
-        Winners are left alone - trailing stop handles the exit."""
+        """Close position if max hold time exceeded AND position is losing or breakeven."""
         entry_time = self._entry_times.get(deal_id)
         if not entry_time:
             return False
@@ -406,7 +390,6 @@ class PositionWatchdog:
         if hold_hours < max_hours:
             return False
 
-        # Position in profit (>+0.5%) → let trailing stop handle it
         if pl_pct > 0.5:
             logger.info(
                 f"WATCHDOG: Max hold exceeded for {epic} ({hold_hours:.1f}h) "
@@ -414,7 +397,6 @@ class PositionWatchdog:
             )
             return False
 
-        # Position in loss or breakeven (±0.5%) → close it
         try:
             status = "tab" if pl_pct < -0.5 else "breakeven"
             logger.warning(
@@ -430,7 +412,6 @@ class PositionWatchdog:
                 f"Kategori: {self.risk.get_coin_category(epic)}\n"
                 f"Vindere beskyttes af trailing stop"
             )
-            # Cycle trading on timeout close
             self._trigger_cycle_trade(epic, direction, pl_pct)
             return True
         except Exception as e:
@@ -439,14 +420,12 @@ class PositionWatchdog:
 
     def _check_early_exit(self, deal_id, epic, direction, size, pl_pct):
         """Detect momentum acceleration with adverse candles and exit early."""
-        # Grace period: don't trigger early exit on positions opened less than 15 minutes ago
         entry_time = self._entry_times.get(deal_id)
         if entry_time:
             age_minutes = (datetime.now() - entry_time).total_seconds() / 60
             if age_minutes < 15:
-                return False  # Too young, let the position breathe
+                return False
 
-        # Only check every 5 minutes (cache-based)
         candle_data = self._candle_cache.get(epic)
         if candle_data and (time.time() - candle_data["timestamp"]) < self._candle_cache_ttl:
             candles = candle_data["candles"]
@@ -467,7 +446,6 @@ class PositionWatchdog:
         if len(candles) < 4:
             return False
 
-        # Check last 4 candles for adverse movement
         recent = candles[-4:]
         adverse_candles = []
         for c in recent:
@@ -479,17 +457,14 @@ class PositionWatchdog:
         if len(adverse_candles) < 3:
             return False
 
-        # Check for acceleration (each candle bigger than previous)
         accelerating = all(
             adverse_candles[i] > adverse_candles[i - 1]
             for i in range(1, len(adverse_candles))
         )
 
         if not accelerating:
-            return False  # Decelerating - hold
+            return False
 
-        # 3 adverse candles + acceleration + P/L between -1% and -3%: close 50%
-        # Don't trigger if P/L is barely negative (< -1%) — let the position breathe
         if len(adverse_candles) == 3 and -3.0 < pl_pct <= -1.0:
             partial_size = round(size * 0.5, 4)
             if partial_size > 0 and deal_id not in self._partial_taken:
@@ -508,7 +483,6 @@ class PositionWatchdog:
                 except Exception as e:
                     logger.error(f"Watchdog: Early exit partial failed for {epic}: {e}")
 
-        # 4+ adverse candles + acceleration: close 100%
         elif len(adverse_candles) >= 4:
             try:
                 self.client.close_position(deal_id, direction=direction, size=size)
@@ -530,12 +504,10 @@ class PositionWatchdog:
 
     def _check_dynamic_tp(self, deal_id, epic, direction, entry_price, current_price, pl_pct, atr_pct, pos):
         """Extend TP when price is within 1% of target and momentum is positive."""
-        # Max 2 extensions
         extensions = self._tp_extensions.get(deal_id, 0)
         if extensions >= 2:
             return
 
-        # Get current TP from position
         tp = pos["position"].get("takeProfit")
         if tp is None:
             return
@@ -544,16 +516,14 @@ class PositionWatchdog:
         if tp == 0:
             return
 
-        # Check if price is within 1% of TP
         if direction == "BUY":
             dist_to_tp_pct = (tp - current_price) / current_price * 100
         else:
             dist_to_tp_pct = (current_price - tp) / current_price * 100
 
         if dist_to_tp_pct > 1.0 or dist_to_tp_pct < 0:
-            return  # Not close enough to TP, or already past it
+            return
 
-        # Check momentum: need 3 green candles for BUY, 3 red for SELL
         candle_data = self._candle_cache.get(epic)
         if not candle_data:
             return
@@ -571,7 +541,6 @@ class PositionWatchdog:
         if not positive_momentum:
             return
 
-        # Extend TP by 1.5x ATR
         atr_extension = current_price * (atr_pct / 100) * 1.5
         if direction == "BUY":
             new_tp = round(tp + atr_extension, 5)
@@ -599,7 +568,6 @@ class PositionWatchdog:
         if not self._cycle_callback:
             return
 
-        # Check cooldown (30 minutes per epic)
         cooldown = self._cycle_cooldowns.get(epic)
         if cooldown and (datetime.now() - cooldown).total_seconds() < 1800:
             logger.info(f"Cycle trade {epic}: cooldown active, skipping")
@@ -607,7 +575,6 @@ class PositionWatchdog:
 
         self._cycle_cooldowns[epic] = datetime.now()
 
-        # Run re-analysis in separate thread to not block watchdog
         opposite_direction = "SELL" if closed_direction == "BUY" else "BUY"
         thread = threading.Thread(
             target=self._cycle_callback,
@@ -629,7 +596,6 @@ class PositionWatchdog:
             entry_price = pos["position"]["level"]
             current_price = pos["market"]["bid"] if direction == "BUY" else pos["market"]["offer"]
 
-            # Must be profitable
             if direction == "BUY":
                 pl_pct = (current_price - entry_price) / entry_price * 100
             else:
@@ -642,7 +608,6 @@ class PositionWatchdog:
             if entry_conf is None:
                 continue
 
-            # Trigger scale-in callback
             try:
                 self._scale_in_callback(epic, direction, deal_id, entry_conf, pos)
             except Exception as e:
@@ -662,7 +627,6 @@ class PositionWatchdog:
             entry_price = pos["position"]["level"]
             current_price = pos["market"]["bid"] if direction == "BUY" else pos["market"]["offer"]
             sl = pos["position"].get("stopLevel")
-            tp = pos["position"].get("profitLevel")
 
             if direction == "BUY":
                 pl_pct = (current_price - entry_price) / entry_price * 100
@@ -675,7 +639,6 @@ class PositionWatchdog:
             be_str = " [BE]" if pos["position"]["dealId"] in self._breakeven_set else ""
             summaries.append(f"{epic}:{pl_pct:+.1f}%{be_str} {sl_str}")
 
-            # ALERT: Position without stop loss
             if not sl:
                 logger.warning(f"WATCHDOG ALERT: {epic} has NO STOP LOSS! deal={pos['position']['dealId']}")
 

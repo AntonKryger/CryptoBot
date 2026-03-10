@@ -93,7 +93,7 @@ class RedditSentiment:
             time.sleep(self._request_delay - elapsed)
         self._last_request = time.time()
 
-    # ── Reddit OAuth ──────────────────────────────────────────────
+    # -- Reddit OAuth --
 
     def _get_reddit_token(self):
         """Get or refresh Reddit OAuth token."""
@@ -156,7 +156,7 @@ class RedditSentiment:
             logger.error(f"Reddit fetch failed for '{query}': {e}")
             return []
 
-    # ── CryptoPanic ───────────────────────────────────────────────
+    # -- CryptoPanic --
 
     def _fetch_cryptopanic(self, currency):
         """Fetch news from CryptoPanic Developer API v2."""
@@ -237,7 +237,7 @@ class RedditSentiment:
             "source": post.get("source", {}).get("title", ""),
         }
 
-    # ── CoinGecko (free, coin-specific sentiment) ─────────────────
+    # -- CoinGecko (free, coin-specific sentiment) --
 
     def _fetch_coingecko_sentiment(self, coin_id):
         """Fetch sentiment from CoinGecko (free, no API key)."""
@@ -266,7 +266,7 @@ class RedditSentiment:
             logger.error(f"CoinGecko fetch failed for {coin_id}: {e}")
             return None
 
-    # ── Fear & Greed Index ────────────────────────────────────────
+    # -- Fear & Greed Index --
 
     def _fetch_fear_greed(self):
         """Fetch Bitcoin Fear & Greed Index (free, no API key needed)."""
@@ -292,7 +292,7 @@ class RedditSentiment:
             logger.error(f"Fear & Greed fetch failed: {e}")
             return {"value": 50, "label": "Neutral"}
 
-    # ── Shared analysis ───────────────────────────────────────────
+    # -- Shared analysis --
 
     def _analyze_text(self, text):
         """Score text as bullish/bearish. Returns (bullish_count, bearish_count)."""
@@ -324,7 +324,7 @@ class RedditSentiment:
             "comments": num_comments,
         }
 
-    # ── Main sentiment API ────────────────────────────────────────
+    # -- Main sentiment API --
 
     def get_sentiment(self, epic):
         """Get combined sentiment from all sources.
@@ -346,7 +346,7 @@ class RedditSentiment:
         all_titles_bull = []
         all_titles_bear = []
 
-        # ── CoinGecko (coin-specific sentiment, free) ──
+        # -- CoinGecko (coin-specific sentiment, free) --
         coingecko_id = mapping.get("coingecko")
         coingecko_data = None
         if coingecko_id:
@@ -359,7 +359,7 @@ class RedditSentiment:
                 total_bearish += (down / 100) * 4
                 total_posts += 1  # count as data source
 
-        # ── CryptoPanic (if available - may be rate limited) ──
+        # -- CryptoPanic (if available - may be rate limited) --
         if self.cryptopanic_enabled:
             currency = mapping.get("cryptopanic", epic.replace("USD", ""))
             cp_posts = self._fetch_cryptopanic(currency)
@@ -380,7 +380,7 @@ class RedditSentiment:
                         all_titles_bear.append(scored["title"])
                 total_posts += len(cp_posts)
 
-        # ── Reddit (secondary) ──
+        # -- Reddit (secondary) --
         if self.reddit_enabled:
             search_terms = mapping.get("reddit", [epic.replace("USD", "").lower()])
             query = " OR ".join(search_terms)
@@ -396,7 +396,7 @@ class RedditSentiment:
                         all_titles_bear.append(scored["title"])
                 total_posts += len(posts)
 
-        # ── Fear & Greed Index (always available, free) ──
+        # -- Fear & Greed Index (always available, free) --
         fng = self._fetch_fear_greed()
         fng_value = fng["value"]  # 0=extreme fear, 100=extreme greed
 
