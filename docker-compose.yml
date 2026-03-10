@@ -18,3 +18,14 @@ services:
       - ./config_ai.yaml:/app/config_ai.yaml:ro
       - ./data_ai:/app/data
       - ./logs_ai:/app/logs
+
+  cryptobot-dashboard:
+    build: .
+    container_name: cryptobot-dashboard
+    restart: always
+    command: ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "30", "dashboard:app"]
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./data:/app/data:ro
+      - ./data_ai:/app/data_ai:ro

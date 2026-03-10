@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Statistik - CryptoBot Dashboard{% endblock %}
+
+{% block content %}
+<h1>Statistik</h1>
+
+<div class="kpi-grid">
+    <div class="kpi-card">
+        <div class="kpi-label">Win Rate</div>
+        <div class="kpi-value">{{ overview.win_rate }}%</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Profit Factor</div>
+        <div class="kpi-value">{{ overview.profit_factor }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Sharpe Ratio</div>
+        <div class="kpi-value">{{ stats.sharpe_ratio }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Max Drawdown</div>
+        <div class="kpi-value negative">EUR {{ "%.2f"|format(stats.max_drawdown) }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Bedste Trade</div>
+        <div class="kpi-value positive">EUR {{ "%.2f"|format(stats.best_trade) }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Vaerste Trade</div>
+        <div class="kpi-value negative">EUR {{ "%.2f"|format(stats.worst_trade) }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Win Streak (max)</div>
+        <div class="kpi-value">{{ stats.max_win_streak }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Loss Streak (max)</div>
+        <div class="kpi-value">{{ stats.max_loss_streak }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Nuvaerende Streak</div>
+        <div class="kpi-value {% if stats.current_streak_type == 'win' %}positive{% elif stats.current_streak_type == 'loss' %}negative{% endif %}">
+            {{ stats.current_streak }} {{ stats.current_streak_type }}
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Avg Win</div>
+        <div class="kpi-value positive">EUR {{ "%.2f"|format(overview.avg_win) }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Avg Loss</div>
+        <div class="kpi-value negative">EUR {{ "%.2f"|format(overview.avg_loss) }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Total P&L</div>
+        <div class="kpi-value {% if overview.total_pl >= 0 %}positive{% else %}negative{% endif %}">
+            EUR {{ "%.2f"|format(overview.total_pl) }}
+        </div>
+    </div>
+</div>
+
+<div class="chart-card" style="margin-top: 2rem;">
+    <h3>Kumulativ P&L</h3>
+    <canvas id="cumulativePnlChart"></canvas>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadCumulativePnl() {
+        const resp = await fetch('/api/daily-pnl?days=90');
+        const data = await resp.json();
+        createLineChart('cumulativePnlChart', data.dates, data.cumulative, 'Kumulativ P&L (EUR)', '#00d4aa');
+    }
+    loadCumulativePnl();
+</script>
+{% endblock %}

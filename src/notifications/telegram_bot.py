@@ -158,3 +158,52 @@ class TelegramNotifier:
             f"Daglig P/L: €{daily_pl:.2f}"
         )
         self.send(msg)
+
+    def send_daily_summary(self, stats_engine):
+        """Send daily trading summary for all bots."""
+        try:
+            msg = "📊 <b>Daglig Opsummering</b>\n\n"
+
+            for bot_name in stats_engine.db_paths:
+                overview = stats_engine.get_overview(bot_name)
+                stats = stats_engine.get_detailed_stats(bot_name)
+
+                emoji = "🤖" if bot_name == "rule" else "🧠"
+                msg += f"{emoji} <b>{bot_name.upper()} Bot</b>\n"
+                msg += f"  Trades i dag: {overview.get('today_trades', '-')}\n"
+                msg += f"  Dagens P&L: EUR {overview['today_pl']:+.2f}\n"
+                msg += f"  Win rate: {overview['win_rate']}%\n"
+                msg += f"  Total P&L: EUR {overview['total_pl']:+.2f}\n"
+
+                if stats['best_trade'] != 0:
+                    msg += f"  Bedste: EUR {stats['best_trade']:+.2f}\n"
+                if stats['worst_trade'] != 0:
+                    msg += f"  Vaerste: EUR {stats['worst_trade']:+.2f}\n"
+
+                msg += "\n"
+
+            self.send(msg)
+        except Exception as e:
+            logger.error(f"Daily summary failed: {e}")
+
+    def start_daily_summary_scheduler(self, stats_engine):
+        """Schedule daily summary at 23:00 CET."""
+        from datetime import datetime, timedelta
+
+        def _schedule_next():
+            now = datetime.now()
+            target = now.replace(hour=23, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            delay = (target - now).total_seconds()
+
+            timer = threading.Timer(delay, _run_summary)
+            timer.daemon = True
+            timer.start()
+
+        def _run_summary():
+            self.send_daily_summary(stats_engine)
+            _schedule_next()
+
+        _schedule_next()
+        logger.info("Daily summary scheduler started (23:00 CET)")

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Kalender - CryptoBot Dashboard{% endblock %}
+
+{% block content %}
+<h1>P&L Kalender</h1>
+
+<div class="bot-selector" style="margin-bottom: 1rem;">
+    {% for bot in bots %}
+    <button class="btn-bot{% if loop.first %} active{% endif %}" onclick="loadCalendar('{{ bot }}', this)">{{ bot|upper }}</button>
+    {% endfor %}
+    <button class="btn-bot" onclick="loadCalendar('', this)">Alle</button>
+</div>
+
+<div class="calendar-grid" id="calendarGrid"></div>
+
+<div class="calendar-legend">
+    <span class="legend-item"><span class="legend-color" style="background:#ff4757"></span> Tab</span>
+    <span class="legend-item"><span class="legend-color" style="background:#576574"></span> 0</span>
+    <span class="legend-item"><span class="legend-color" style="background:#00d4aa"></span> Profit</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadCalendar(bot, btn) {
+        if (btn) {
+            document.querySelectorAll('.bot-selector .btn-bot').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        }
+
+        const url = bot ? `/api/calendar?bot=${bot}` : '/api/calendar';
+        const resp = await fetch(url);
+        const data = await resp.json();
+
+        const grid = document.getElementById('calendarGrid');
+        if (!data.length) {
+            grid.innerHTML = '<p class="no-data">Ingen data endnu</p>';
+            return;
+        }
+
+        // Build calendar for last 90 days
+        const today = new Date();
+        const days = [];
+        for (let i = 89; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().slice(0, 10);
+            const entry = data.find(e => e.date === dateStr);
+            days.push({ date: dateStr, pnl: entry ? entry.pnl : null, trades: entry ? entry.trades : 0 });
+        }
+
+        // Find max for color scale
+        const maxAbs = Math.max(...data.map(d => Math.abs(d.pnl)), 1);
+
+        grid.innerHTML = days.map(d => {
+            let bg = '#2a2a3e'; // no data
+            let title = d.date;
+            if (d.pnl !== null) {
+                const intensity = Math.min(Math.abs(d.pnl) / maxAbs, 1);
+                if (d.pnl > 0) {
+                    bg = `rgba(0, 212, 170, ${0.2 + intensity * 0.8})`;
+                } else if (d.pnl < 0) {
+                    bg = `rgba(255, 71, 87, ${0.2 + intensity * 0.8})`;
+                } else {
+                    bg = '#576574';
+                }
+                title += ` | EUR ${d.pnl.toFixed(2)} | ${d.trades} trades`;
+            }
+
+            const dayLabel = new Date(d.date).getDate();
+            return `<div class="cal-day" style="background:${bg}" title="${title}">
+                <span class="cal-label">${dayLabel}</span>
+            </div>`;
+        }).join('');
+    }
+
+    loadCalendar('{{ bots[0] if bots else "" }}');
+</script>
+{% endblock %}

@@ -170,6 +170,10 @@ class CryptoBotAI:
         available = balance.get("available", current_balance)
         logger.info(f"[AI] Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
 
+        # Snapshot balance for dashboard + reconcile stale trades
+        self.executor.snapshot_balance(balance, bot_name="ai")
+        self.executor.reconcile_closed_trades()
+
         # ── PASS 1: Analyze all coins, collect trade signals ──
         trade_signals = []
 

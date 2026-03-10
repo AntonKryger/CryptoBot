@@ -91,6 +91,16 @@ class CryptoBot:
         self._register_commands()
         self.notifier.start_command_listener()
 
+        # Start daily summary scheduler
+        from src.dashboard.stats_engine import StatsEngine
+        db_paths = {"rule": self.executor.db_path}
+        ai_db = self.config.get("database", {}).get("ai_path", "data_ai/trades.db")
+        import os
+        if os.path.exists(ai_db):
+            db_paths["ai"] = ai_db
+        self._stats_engine = StatsEngine(db_paths)
+        self.notifier.start_daily_summary_scheduler(self._stats_engine)
+
         # Start position watchdog (protects profits every 12 seconds)
         self.watchdog.start()
 
@@ -153,6 +163,10 @@ class CryptoBot:
 
         available = balance.get("available", current_balance)
         logger.info(f"Balance: EUR {current_balance:.0f} | Available: EUR {available:.0f} | Open: {len(open_positions)}")
+
+        # Snapshot balance for dashboard + reconcile stale trades
+        self.executor.snapshot_balance(balance, bot_name="rule")
+        self.executor.reconcile_closed_trades()
 
         # -- PASS 1: Analyze all coins, collect trade signals --
         trade_signals = []

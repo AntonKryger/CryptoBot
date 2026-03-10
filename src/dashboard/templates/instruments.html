@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Coins - CryptoBot Dashboard{% endblock %}
+
+{% block content %}
+<h1>Coins</h1>
+
+<div class="bot-selector" style="margin-bottom: 1rem;">
+    {% for bot in bots %}
+    <button class="btn-bot{% if loop.first %} active{% endif %}" onclick="loadInstruments('{{ bot }}', this)">{{ bot|upper }}</button>
+    {% endfor %}
+    <button class="btn-bot" onclick="loadInstruments('', this)">Alle</button>
+</div>
+
+<div class="chart-card">
+    <h3>P&L per Coin</h3>
+    <canvas id="instrumentChart"></canvas>
+</div>
+
+<div class="table-wrapper" style="margin-top: 2rem;">
+    <table>
+        <thead>
+            <tr>
+                <th>Coin</th>
+                <th>Trades</th>
+                <th>Wins</th>
+                <th>Win Rate</th>
+                <th>Total P&L</th>
+                <th>Avg P&L</th>
+            </tr>
+        </thead>
+        <tbody id="instrumentsBody">
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let instChart;
+
+    async function loadInstruments(bot, btn) {
+        if (btn) {
+            document.querySelectorAll('.bot-selector .btn-bot').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        }
+
+        const url = bot ? `/api/instruments?bot=${bot}` : '/api/instruments';
+        const resp = await fetch(url);
+        const data = await resp.json();
+
+        // Chart
+        const labels = data.map(d => d.epic);
+        const values = data.map(d => d.total_pl);
+        const colors = values.map(v => v >= 0 ? '#00d4aa' : '#ff4757');
+
+        if (instChart) instChart.destroy();
+        const ctx = document.getElementById('instrumentChart').getContext('2d');
+        instChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'P&L (EUR)',
+                    data: values,
+                    backgroundColor: colors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                ...chartDefaults,
+                plugins: { ...chartDefaults.plugins, legend: { display: false } }
+            }
+        });
+
+        // Table
+        document.getElementById('instrumentsBody').innerHTML = data.map(d => {
+            const plClass = d.total_pl >= 0 ? 'positive' : 'negative';
+            return `<tr>
+                <td><strong>${d.epic}</strong></td>
+                <td>${d.trades}</td>
+                <td>${d.wins}</td>
+                <td>${d.win_rate}%</td>
+                <td class="${plClass}">${d.total_pl.toFixed(2)}</td>
+                <td class="${plClass}">${d.avg_pl.toFixed(2)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    loadInstruments('{{ bots[0] if bots else "" }}');
+</script>
+{% endblock %}

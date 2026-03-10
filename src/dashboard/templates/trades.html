@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Trades - CryptoBot Dashboard{% endblock %}
+
+{% block content %}
+<h1>Trades</h1>
+
+<div class="filters">
+    <select id="filterBot" onchange="loadTrades()">
+        <option value="">Alle bots</option>
+        {% for bot in bots %}
+        <option value="{{ bot }}">{{ bot|upper }}</option>
+        {% endfor %}
+    </select>
+    <select id="filterStatus" onchange="loadTrades()">
+        <option value="">Alle status</option>
+        <option value="OPEN">Aaben</option>
+        <option value="CLOSED">Lukket</option>
+    </select>
+    <select id="filterDirection" onchange="loadTrades()">
+        <option value="">Alle retninger</option>
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+    </select>
+    <input type="text" id="filterEpic" placeholder="Filter coin..." oninput="loadTrades()">
+</div>
+
+<div class="table-wrapper">
+    <table id="tradesTable">
+        <thead>
+            <tr>
+                <th>Tid</th>
+                <th>Bot</th>
+                <th>Coin</th>
+                <th>Retning</th>
+                <th>Str.</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>P&L</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="tradesBody">
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadTrades() {
+        const bot = document.getElementById('filterBot').value;
+        const status = document.getElementById('filterStatus').value;
+        const direction = document.getElementById('filterDirection').value;
+        const epic = document.getElementById('filterEpic').value.toUpperCase();
+
+        let url = '/api/trades?limit=200';
+        if (bot) url += `&bot=${bot}`;
+        if (status) url += `&status=${status}`;
+        if (direction) url += `&direction=${direction}`;
+        if (epic) url += `&epic=${epic}`;
+
+        const resp = await fetch(url);
+        const trades = await resp.json();
+
+        const tbody = document.getElementById('tradesBody');
+        tbody.innerHTML = trades.map(t => {
+            const plClass = (t.profit_loss || 0) >= 0 ? 'positive' : 'negative';
+            const dirClass = t.direction === 'BUY' ? 'tag-buy' : 'tag-sell';
+            const statusClass = t.status === 'OPEN' ? 'tag-open' : 'tag-closed';
+            return `<tr>
+                <td>${formatDate(t.timestamp)}</td>
+                <td>${t.bot || '-'}</td>
+                <td><strong>${t.epic}</strong></td>
+                <td><span class="tag ${dirClass}">${t.direction}</span></td>
+                <td>${t.size}</td>
+                <td>${t.entry_price ? t.entry_price.toFixed(4) : '-'}</td>
+                <td>${t.exit_price ? t.exit_price.toFixed(4) : '-'}</td>
+                <td class="${plClass}">${t.profit_loss != null ? t.profit_loss.toFixed(2) : '-'}</td>
+                <td><span class="tag ${statusClass}">${t.status}</span></td>
+            </tr>`;
+        }).join('');
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        return d.toLocaleDateString('da-DK') + ' ' + d.toLocaleTimeString('da-DK', {hour:'2-digit', minute:'2-digit'});
+    }
+
+    loadTrades();
+</script>
+{% endblock %}

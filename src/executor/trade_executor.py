@@ -28,7 +28,7 @@ class TradeExecutor:
         return sqlite3.connect(self.db_path)
 
     def _init_db(self):
-        """Create trades table if it doesn't exist."""
+        """Create trades and balance_snapshots tables if they don't exist."""
         db = self._get_db()
         db.execute("""
             CREATE TABLE IF NOT EXISTS trades (
@@ -46,6 +46,16 @@ class TradeExecutor:
                 exit_timestamp TEXT,
                 profit_loss REAL,
                 signal_details TEXT
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS balance_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                balance REAL NOT NULL,
+                available REAL,
+                profit_loss REAL,
+                bot_name TEXT DEFAULT 'rule'
             )
         """)
         db.commit()
@@ -150,6 +160,81 @@ class TradeExecutor:
         db.commit()
         db.close()
         logger.info(f"Trade logged: {signal} {epic} x{size} @ {price}")
+
+    def update_trade_close(self, deal_id, exit_price, profit_loss, partial=False):
+        """Update a trade record when position is closed by watchdog."""
+        try:
+            db = self._get_db()
+            if partial:
+                # For partial closes, just log the P&L but keep status OPEN
+                db.execute("""
+                    UPDATE trades SET signal_details = signal_details || ' | partial_pl=' || ?
+                    WHERE deal_id = ? AND status = 'OPEN'
+                """, (str(round(profit_loss, 2)), deal_id))
+            else:
+                db.execute("""
+                    UPDATE trades SET exit_price = ?, exit_timestamp = ?, profit_loss = ?, status = 'CLOSED'
+                    WHERE deal_id = ? AND status = 'OPEN'
+                """, (exit_price, datetime.now().isoformat(), profit_loss, deal_id))
+            db.commit()
+            db.close()
+            action = "partial update" if partial else "closed"
+            logger.info(f"Trade DB {action}: {deal_id} exit={exit_price} P/L={profit_loss:.2f}")
+        except Exception as e:
+            logger.error(f"Failed to update trade close in DB: {e}")
+
+    def reconcile_closed_trades(self):
+        """Background sync: find OPEN trades in DB that are actually closed on Capital.com."""
+        try:
+            positions = self.client.get_positions()
+            active_deal_ids = set()
+            for pos in positions.get("positions", []):
+                active_deal_ids.add(pos["position"]["dealId"])
+                # Also check dealReference
+                ref = pos["position"].get("dealReference")
+                if ref:
+                    active_deal_ids.add(ref)
+
+            db = self._get_db()
+            cursor = db.execute("SELECT id, deal_id, entry_price, direction FROM trades WHERE status = 'OPEN'")
+            open_trades = cursor.fetchall()
+
+            reconciled = 0
+            for trade_id, deal_id, entry_price, direction in open_trades:
+                if deal_id not in active_deal_ids:
+                    # Trade is closed on Capital.com but still OPEN in DB
+                    db.execute("""
+                        UPDATE trades SET status = 'CLOSED', exit_timestamp = ?
+                        WHERE id = ? AND status = 'OPEN'
+                    """, (datetime.now().isoformat(), trade_id))
+                    reconciled += 1
+                    logger.info(f"Reconciled trade {deal_id} as CLOSED (no longer on Capital.com)")
+
+            if reconciled > 0:
+                db.commit()
+                logger.info(f"Reconciled {reconciled} trades")
+            db.close()
+        except Exception as e:
+            logger.error(f"Trade reconciliation failed: {e}")
+
+    def snapshot_balance(self, balance_data, bot_name="rule"):
+        """Save a balance snapshot for the dashboard."""
+        try:
+            db = self._get_db()
+            db.execute("""
+                INSERT INTO balance_snapshots (timestamp, balance, available, profit_loss, bot_name)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                datetime.now().isoformat(),
+                balance_data.get("balance", 0),
+                balance_data.get("available", 0),
+                balance_data.get("profitLoss", 0),
+                bot_name,
+            ))
+            db.commit()
+            db.close()
+        except Exception as e:
+            logger.error(f"Balance snapshot failed: {e}")
 
     def check_trailing_stops(self):
         """Check and update trailing stops for open positions."""

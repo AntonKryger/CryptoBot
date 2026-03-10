@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}CryptoBot Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('dashboard.static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">CryptoBot</div>
+        <div class="nav-links">
+            <a href="/" class="{% if request.path == '/' %}active{% endif %}">Oversigt</a>
+            <a href="/trades" class="{% if request.path == '/trades' %}active{% endif %}">Trades</a>
+            <a href="/stats" class="{% if request.path == '/stats' %}active{% endif %}">Statistik</a>
+            <a href="/instruments" class="{% if request.path == '/instruments' %}active{% endif %}">Coins</a>
+            <a href="/calendar" class="{% if request.path == '/calendar' %}active{% endif %}">Kalender</a>
+            <a href="/compare" class="{% if request.path == '/compare' %}active{% endif %}">Sammenlign</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="{{ url_for('dashboard.static', filename='dashboard.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
