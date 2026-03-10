@@ -2,7 +2,14 @@
 
 from flask import Blueprint, render_template, jsonify, request, current_app
 
-bp = Blueprint("dashboard", __name__)
+import os
+
+bp = Blueprint(
+    "dashboard", __name__,
+    static_folder=os.path.join(os.path.dirname(__file__), "static"),
+    static_url_path="/static",
+    template_folder=os.path.join(os.path.dirname(__file__), "templates"),
+)
 
 
 # ── HTML Pages ────────────────────────────────────────────────
