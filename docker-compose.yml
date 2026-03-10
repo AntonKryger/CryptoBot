@@ -19,6 +19,16 @@ services:
       - ./data_ai:/app/data
       - ./logs_ai:/app/logs
 
+  cryptobot-demo:
+    build: .
+    container_name: cryptobot-demo
+    restart: always
+    command: ["python", "-u", "main.py", "--config", "config_demo.yaml"]
+    volumes:
+      - ./config_demo.yaml:/app/config_demo.yaml:ro
+      - ./data_demo:/app/data
+      - ./logs_demo:/app/logs
+
   cryptobot-dashboard:
     build: .
     container_name: cryptobot-dashboard
@@ -29,3 +39,4 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./data_ai:/app/data_ai:ro
+      - ./data_demo:/app/data_demo:ro

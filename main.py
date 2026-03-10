@@ -692,7 +692,11 @@ class CryptoBot:
 
 
 def main():
-    bot = CryptoBot()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None, help="Path to config file")
+    args = parser.parse_args()
+    bot = CryptoBot(config_path=args.config)
 
     # Handle Ctrl+C gracefully
     def signal_handler(sig, frame):

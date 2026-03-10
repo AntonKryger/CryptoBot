@@ -17,6 +17,7 @@ def create_app(config=None):
     db_paths = {
         "rule": os.environ.get("RULE_DB", "data/trades.db"),
         "ai": os.environ.get("AI_DB", "data_ai/trades.db"),
+        "demo": os.environ.get("DEMO_DB", "data_demo/trades.db"),
     }
 
     # Filter to only existing DBs
