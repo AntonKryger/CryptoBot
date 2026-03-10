@@ -5,6 +5,7 @@ and make intelligent trading decisions.
 
 import json
 import logging
+import os
 import time
 from datetime import datetime
 
@@ -42,7 +43,22 @@ ENTRY QUALITY:
 
 COST AWARENESS:
 - CFD spreads cost ~0.1-0.5% per trade. Only trade when expected move > 2x the spread.
-- Fewer high-quality trades beats many marginal trades.
+
+DIRECTION BALANCE:
+- You have a strong long bias. Crypto goes DOWN too. Actively look for SHORT setups.
+- In bearish EMA trend (EMA 9 < EMA 21): You MUST consider SELL. Do not default to HOLD just because shorting feels uncomfortable.
+- Rallies in downtrends are SELL opportunities, not reasons to go long.
+
+R:R DISCIPLINE:
+- Never recommend a trade where the expected stop-loss distance > take-profit distance.
+- Minimum acceptable R:R is 1.5:1 (reward 1.5x the risk).
+
+LEARNING FROM PAST TRADES:
+- You MUST actively trade. Your job is to FIND good setups, not to avoid trading.
+- Losing trades are normal and expected. The goal is to learn WHY you lost and enter BETTER next time — not to stop entering.
+- If you've been losing on a coin, don't avoid it — look for what the WINNING trades had in common and replicate that setup.
+- The rule bot's winning trades show proven patterns. Study them and trade similarly.
+- A trader who doesn't trade is useless. Be brave, be active, be smart.
 
 Sentiment is SUPPLEMENTARY only. Require 3+ technical confirmations first.
 
@@ -67,6 +83,7 @@ class AIAnalyst:
         self._last_request = 0
         self._request_delay = 1.0  # seconds between API calls
         self.trade_executor = None  # Set by main_ai.py for recent P/L feedback
+        self.rule_db_path = ai_cfg.get("rule_db_path", "data/trades.db")  # Rule bot DB for cross-learning
 
         logger.info(f"AI Analyst initialized (model: {self.model}, min_confidence: {self.min_confidence})")
 
@@ -317,26 +334,101 @@ RULE-BASED BOT SIGNAL:
 - Reasons: {', '.join(rs_reasons[:5]) if rs_reasons else 'None'}
 - Note: This is the technical scoring system's conclusion. If it agrees with your analysis, you can be more confident. If it disagrees, explain why you see it differently."""
 
-        # Add recent trade performance for this epic (feedback loop)
+        # Enhanced AI feedback loop - learn from wins AND losses
         if self.trade_executor:
             try:
-                recent = self.trade_executor.get_trade_history(limit=10)
-                epic_trades = [t for t in recent if t["epic"] == epic]
-                if epic_trades:
-                    prompt += f"\n\nRECENT TRADE HISTORY FOR {epic} (learn from past decisions):\n"
-                    for t in epic_trades[:3]:  # last 3 trades for this coin
-                        pl = t.get("profit_loss")
-                        pl_str = f"P/L: EUR {pl:+.2f}" if pl is not None else "P/L: unknown (still open?)"
-                        prompt += f"  - {t['direction']} @ {t['entry_price']:.4f} | {pl_str} | {t['status']}\n"
+                feedback = self.trade_executor.get_trade_feedback(epic=epic, limit=10)
+                if feedback:
+                    wins = [t for t in feedback if (t.get("profit_loss") or 0) > 0]
+                    losses = [t for t in feedback if (t.get("profit_loss") or 0) < 0]
+                    total_pl = sum(t.get("profit_loss", 0) for t in feedback)
 
-                    wins = sum(1 for t in epic_trades if (t.get("profit_loss") or 0) > 0)
-                    losses = sum(1 for t in epic_trades if (t.get("profit_loss") or 0) < 0)
-                    if wins + losses > 0:
-                        prompt += f"  Win/Loss: {wins}W / {losses}L\n"
-                        if losses > wins:
-                            prompt += "  ⚠ More losses than wins on this coin recently. Be more selective.\n"
-            except Exception:
-                pass
+                    prompt += f"\n\n{'='*50}\nTRADE FEEDBACK FOR {epic} (CRITICAL - learn from this):\n"
+                    prompt += f"Record: {len(wins)}W / {len(losses)}L | Net P&L: EUR {total_pl:+.2f}\n"
+
+                    # Analyze losses - what went wrong?
+                    if losses:
+                        prompt += f"\n⚠ LOSSES TO LEARN FROM ({len(losses)} trades):\n"
+                        for t in losses[:3]:
+                            entry = t.get("entry_price", 0)
+                            exit_p = t.get("exit_price", 0)
+                            sl = t.get("stop_loss", 0)
+                            tp = t.get("take_profit", 0)
+                            pl = t.get("profit_loss", 0)
+                            hit_sl = abs(exit_p - sl) < abs(exit_p - tp) if sl and tp and exit_p else False
+                            prompt += (
+                                f"  - {t['direction']} @ {entry:.4f} → exit {exit_p:.4f} | EUR {pl:+.2f}\n"
+                                f"    SL={sl:.4f} TP={tp:.4f} | {'Hit SL' if hit_sl else 'Closed early'}\n"
+                            )
+                            # Parse signal_details for lessons
+                            details_str = t.get("signal_details", "")
+                            if details_str:
+                                try:
+                                    d = json.loads(details_str) if isinstance(details_str, str) else details_str
+                                    rsi_at_entry = d.get("rsi", "?")
+                                    regime_at_entry = d.get("regime", "?")
+                                    prompt += f"    Entry RSI={rsi_at_entry}, Regime={regime_at_entry}\n"
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                        prompt += "  → LESSON: What indicators could have warned? Use this to enter BETTER next time.\n"
+                        prompt += "  → Do NOT avoid this coin — find the RIGHT setup instead.\n"
+
+                    # Analyze wins - what worked?
+                    if wins:
+                        prompt += f"\n✓ WINNING PATTERNS ({len(wins)} trades):\n"
+                        for t in wins[:3]:
+                            entry = t.get("entry_price", 0)
+                            exit_p = t.get("exit_price", 0)
+                            pl = t.get("profit_loss", 0)
+                            prompt += f"  - {t['direction']} @ {entry:.4f} → exit {exit_p:.4f} | EUR {pl:+.2f}\n"
+                            details_str = t.get("signal_details", "")
+                            if details_str:
+                                try:
+                                    d = json.loads(details_str) if isinstance(details_str, str) else details_str
+                                    rsi_at_entry = d.get("rsi", "?")
+                                    regime_at_entry = d.get("regime", "?")
+                                    prompt += f"    Entry RSI={rsi_at_entry}, Regime={regime_at_entry}\n"
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                        prompt += "  → These setups WORKED. Look for similar patterns now.\n"
+
+                # Cross-bot learning: rule bot's best trades
+                if os.path.exists(self.rule_db_path):
+                    rule_winners = self.trade_executor.get_cross_bot_winners(self.rule_db_path, limit=5)
+                    epic_rule_wins = [t for t in rule_winners if t["epic"] == epic]
+                    if epic_rule_wins:
+                        prompt += f"\n📊 RULE BOT'S BEST {epic} TRADES (learn from these):\n"
+                        for t in epic_rule_wins[:3]:
+                            entry = t.get("entry_price", 0)
+                            exit_p = t.get("exit_price", 0)
+                            pl = t.get("profit_loss", 0)
+                            prompt += f"  - {t['direction']} @ {entry:.4f} → {exit_p:.4f} | EUR {pl:+.2f}\n"
+                            details_str = t.get("signal_details", "")
+                            if details_str:
+                                try:
+                                    d = json.loads(details_str) if isinstance(details_str, str) else details_str
+                                    prompt += f"    Signal: score={d.get('signal_strength','?')}, zone={d.get('zone','?')}, RSI={d.get('rsi','?')}\n"
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                        prompt += "  → The rule bot found profitable setups here. Consider similar entries.\n"
+
+                # Overall AI performance summary
+                all_feedback = self.trade_executor.get_trade_feedback(limit=30)
+                if len(all_feedback) >= 5:
+                    all_wins = sum(1 for t in all_feedback if (t.get("profit_loss") or 0) > 0)
+                    all_losses = sum(1 for t in all_feedback if (t.get("profit_loss") or 0) < 0)
+                    win_rate = all_wins / (all_wins + all_losses) * 100 if (all_wins + all_losses) > 0 else 0
+                    long_count = sum(1 for t in all_feedback if t["direction"] == "BUY")
+                    short_count = sum(1 for t in all_feedback if t["direction"] == "SELL")
+                    prompt += f"\n📈 YOUR OVERALL STATS: {win_rate:.0f}% win rate ({all_wins}W/{all_losses}L)\n"
+                    prompt += f"Direction bias: {long_count} longs / {short_count} shorts\n"
+                    if short_count < long_count * 0.3:
+                        prompt += "⚠ You barely take short positions! In bearish trends, you MUST short. Look for SELL setups more actively.\n"
+                    if win_rate < 45:
+                        prompt += "⚠ Win rate is below 45%. Study your winning trades — what did they have in common? Replicate THOSE setups.\n"
+
+            except Exception as e:
+                logger.debug(f"Trade feedback error: {e}")
 
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt

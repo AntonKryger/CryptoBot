@@ -93,7 +93,7 @@ class TradeExecutor:
         # Calculate position size and risk levels
         size = self.risk.calculate_position_size(current_balance, current_price)
         stop_loss = self.risk.calculate_stop_loss(current_price, signal)
-        take_profit = self.risk.calculate_take_profit(current_price, signal)
+        take_profit = self.risk.calculate_take_profit(current_price, signal, sl_price=stop_loss)
 
         # Execute the trade
         try:
@@ -291,6 +291,56 @@ class TradeExecutor:
         results = [dict(zip(columns, row)) for row in cursor.fetchall()]
         db.close()
         return results
+
+    def get_trade_feedback(self, epic=None, limit=20):
+        """Get detailed trade feedback for AI learning.
+
+        Returns closed trades with P&L and signal_details for analysis.
+        If epic is provided, filters to that instrument.
+        """
+        db = self._get_db()
+        if epic:
+            cursor = db.execute(
+                """SELECT epic, direction, entry_price, exit_price, stop_loss, take_profit,
+                          profit_loss, signal_details, timestamp, exit_timestamp
+                   FROM trades
+                   WHERE profit_loss IS NOT NULL AND epic = ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (epic, limit),
+            )
+        else:
+            cursor = db.execute(
+                """SELECT epic, direction, entry_price, exit_price, stop_loss, take_profit,
+                          profit_loss, signal_details, timestamp, exit_timestamp
+                   FROM trades
+                   WHERE profit_loss IS NOT NULL
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (limit,),
+            )
+        columns = [desc[0] for desc in cursor.description]
+        results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        db.close()
+        return results
+
+    def get_cross_bot_winners(self, rule_db_path, limit=10):
+        """Get winning trades from the rule-based bot for AI to learn from."""
+        try:
+            db = sqlite3.connect(rule_db_path)
+            cursor = db.execute(
+                """SELECT epic, direction, entry_price, exit_price, stop_loss, take_profit,
+                          profit_loss, signal_details, timestamp
+                   FROM trades
+                   WHERE profit_loss > 0
+                   ORDER BY profit_loss DESC LIMIT ?""",
+                (limit,),
+            )
+            columns = [desc[0] for desc in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            db.close()
+            return results
+        except Exception as e:
+            logger.error(f"Failed to read rule bot trades: {e}")
+            return []
 
     def get_stats(self):
         """Get trading statistics."""

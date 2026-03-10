@@ -201,22 +201,34 @@ class RiskManager:
         )
         return round(sl, 5)
 
-    def calculate_take_profit(self, entry_price, direction, atr_pct=0):
-        """Calculate take-profit price.
+    def calculate_take_profit(self, entry_price, direction, atr_pct=0, sl_price=None):
+        """Calculate take-profit price ensuring minimum R:R ratio.
 
-        Grid-inspired: Use 1.5x ATR for TP (typically 3-5%) instead of fixed 7%.
-        This gives realistic, achievable targets that get hit regularly.
+        TP is always at least 1.5x the SL distance (R:R >= 1.5:1).
+        Uses ATR×3.0 as base (up from 1.5), clamped [3%, 10%].
         Falls back to fixed TP if ATR not available.
         """
+        min_rr_ratio = 1.5  # Minimum reward:risk ratio
+
         if atr_pct > 0:
-            raw_tp_pct = atr_pct * 1.5
-            tp_pct = max(1.5, min(6.0, raw_tp_pct))
+            raw_tp_pct = atr_pct * 3.0
+            tp_pct = max(3.0, min(10.0, raw_tp_pct))
             logger.info(
-                f"ATR TP: atr={atr_pct:.2f}% x 1.5 = {raw_tp_pct:.2f}% -> "
+                f"ATR TP: atr={atr_pct:.2f}% x 3.0 = {raw_tp_pct:.2f}% -> "
                 f"clamped to {tp_pct:.2f}%"
             )
         else:
             tp_pct = self.take_profit_pct
+
+        # Enforce minimum R:R ratio relative to SL
+        if sl_price is not None and entry_price > 0:
+            sl_distance_pct = abs(entry_price - sl_price) / entry_price * 100
+            min_tp_pct = sl_distance_pct * min_rr_ratio
+            if tp_pct < min_tp_pct:
+                logger.info(
+                    f"R:R enforcement: TP {tp_pct:.2f}% < SL {sl_distance_pct:.2f}% x {min_rr_ratio} = {min_tp_pct:.2f}% -> adjusted to {min_tp_pct:.2f}%"
+                )
+                tp_pct = min_tp_pct
 
         if direction == "BUY":
             return round(entry_price * (1 + tp_pct / 100), 5)

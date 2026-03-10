@@ -229,7 +229,7 @@ class CryptoBot:
                     stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
                 else:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-                take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
+                take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
                 cat = self.risk.get_coin_category(epic)
                 signal_mode = details.get("signal_type", "RANGE")
@@ -290,7 +290,7 @@ class CryptoBot:
                 stop_loss = self.risk.calculate_atr_stop_loss(current_price, signal_type, atr_pct)
             else:
                 stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
-            take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct)
+            take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
             result = self.client.create_position(
                 epic=epic, direction=signal_type, size=size,
@@ -415,7 +415,7 @@ class CryptoBot:
                 current_price = None
 
             stop_loss = self.risk.calculate_stop_loss(current_price, "BUY") if current_price else None
-            take_profit = self.risk.calculate_take_profit(current_price, "BUY") if current_price else None
+            take_profit = self.risk.calculate_take_profit(current_price, "BUY", sl_price=stop_loss) if current_price else None
 
             result = self.client.create_position(
                 epic=epic, direction="BUY", size=size,
@@ -465,7 +465,7 @@ class CryptoBot:
                 current_price = None
 
             stop_loss = self.risk.calculate_stop_loss(current_price, "SELL") if current_price else None
-            take_profit = self.risk.calculate_take_profit(current_price, "SELL") if current_price else None
+            take_profit = self.risk.calculate_take_profit(current_price, "SELL", sl_price=stop_loss) if current_price else None
 
             result = self.client.create_position(
                 epic=epic, direction="SELL", size=size,
