@@ -2,14 +2,7 @@
 {% block title %}Kalender - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>P&L Kalender</h1>
-
-<div class="bot-selector" style="margin-bottom: 1rem;">
-    {% for bot in bots %}
-    <button class="btn-bot{% if loop.first %} active{% endif %}" onclick="loadCalendar('{{ bot }}', this)">{{ bot|upper }}</button>
-    {% endfor %}
-    <button class="btn-bot" onclick="loadCalendar('', this)">Alle</button>
-</div>
+<h1>P&L Kalender{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
 <div class="calendar-grid" id="calendarGrid"></div>
 
@@ -22,14 +15,8 @@
 
 {% block scripts %}
 <script>
-    async function loadCalendar(bot, btn) {
-        if (btn) {
-            document.querySelectorAll('.bot-selector .btn-bot').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-        }
-
-        const url = bot ? `/api/calendar?bot=${bot}` : '/api/calendar';
-        const resp = await fetch(url);
+    async function loadCalendar() {
+        const resp = await fetch(apiUrl('/api/calendar'));
         const data = await resp.json();
 
         const grid = document.getElementById('calendarGrid');
@@ -38,7 +25,6 @@
             return;
         }
 
-        // Build calendar for last 90 days
         const today = new Date();
         const days = [];
         for (let i = 89; i >= 0; i--) {
@@ -49,11 +35,10 @@
             days.push({ date: dateStr, pnl: entry ? entry.pnl : null, trades: entry ? entry.trades : 0 });
         }
 
-        // Find max for color scale
         const maxAbs = Math.max(...data.map(d => Math.abs(d.pnl)), 1);
 
         grid.innerHTML = days.map(d => {
-            let bg = '#2a2a3e'; // no data
+            let bg = '#2a2a3e';
             let title = d.date;
             if (d.pnl !== null) {
                 const intensity = Math.min(Math.abs(d.pnl) / maxAbs, 1);
@@ -74,6 +59,6 @@
         }).join('');
     }
 
-    loadCalendar('{{ bots[0] if bots else "" }}');
+    loadCalendar();
 </script>
 {% endblock %}

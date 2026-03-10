@@ -2,15 +2,9 @@
 {% block title %}Trades - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>Trades</h1>
+<h1>Trades{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
 <div class="filters">
-    <select id="filterBot" onchange="loadTrades()">
-        <option value="">Alle bots</option>
-        {% for bot in bots %}
-        <option value="{{ bot }}">{{ bot|upper }}</option>
-        {% endfor %}
-    </select>
     <select id="filterStatus" onchange="loadTrades()">
         <option value="">Alle status</option>
         <option value="OPEN">Aaben</option>
@@ -29,7 +23,7 @@
         <thead>
             <tr>
                 <th>Tid</th>
-                <th>Bot</th>
+                {% if not current_bot %}<th>Bot</th>{% endif %}
                 <th>Coin</th>
                 <th>Retning</th>
                 <th>Str.</th>
@@ -48,19 +42,13 @@
 {% block scripts %}
 <script>
     async function loadTrades() {
-        const bot = document.getElementById('filterBot').value;
         const status = document.getElementById('filterStatus').value;
         const direction = document.getElementById('filterDirection').value;
         const epic = document.getElementById('filterEpic').value.toUpperCase();
 
-        let url = '/api/trades?limit=200';
-        if (bot) url += `&bot=${bot}`;
-        if (status) url += `&status=${status}`;
-        if (direction) url += `&direction=${direction}`;
-        if (epic) url += `&epic=${epic}`;
-
-        const resp = await fetch(url);
+        const resp = await fetch(apiUrl('/api/trades', {limit: 200, status, direction, epic}));
         const trades = await resp.json();
+        const showBot = !currentBot;
 
         const tbody = document.getElementById('tradesBody');
         tbody.innerHTML = trades.map(t => {
@@ -69,7 +57,7 @@
             const statusClass = t.status === 'OPEN' ? 'tag-open' : 'tag-closed';
             return `<tr>
                 <td>${formatDate(t.timestamp)}</td>
-                <td>${t.bot || '-'}</td>
+                ${showBot ? `<td>${t.bot || '-'}</td>` : ''}
                 <td><strong>${t.epic}</strong></td>
                 <td><span class="tag ${dirClass}">${t.direction}</span></td>
                 <td>${t.size}</td>

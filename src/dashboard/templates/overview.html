@@ -2,7 +2,7 @@
 {% block title %}Oversigt - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>Oversigt</h1>
+<h1>Oversigt{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
 <div class="kpi-grid">
     <div class="kpi-card">
@@ -46,12 +46,6 @@
 <div class="chart-grid">
     <div class="chart-card">
         <h3>Balance</h3>
-        <div class="bot-selector">
-            {% for bot in bots %}
-            <button class="btn-bot{% if loop.first %} active{% endif %}" data-bot="{{ bot }}" onclick="loadBalance('{{ bot }}')">{{ bot|upper }}</button>
-            {% endfor %}
-            <button class="btn-bot" data-bot="" onclick="loadBalance('')">Alle</button>
-        </div>
         <canvas id="balanceChart"></canvas>
     </div>
     <div class="chart-card">
@@ -65,27 +59,21 @@
 <script>
     let balanceChart, dailyPnlChart;
 
-    async function loadBalance(bot) {
-        document.querySelectorAll('.bot-selector .btn-bot').forEach(b => b.classList.remove('active'));
-        event.target.classList.add('active');
-
-        const url = bot ? `/api/balance?bot=${bot}` : '/api/balance';
-        const resp = await fetch(url);
+    async function loadBalance() {
+        const resp = await fetch(apiUrl('/api/balance'));
         const data = await resp.json();
-
         if (balanceChart) balanceChart.destroy();
         balanceChart = createLineChart('balanceChart', data.timestamps, data.balances, 'Balance (EUR)', '#00d4aa');
     }
 
     async function loadDailyPnl() {
-        const resp = await fetch('/api/daily-pnl');
+        const resp = await fetch(apiUrl('/api/daily-pnl'));
         const data = await resp.json();
-
         if (dailyPnlChart) dailyPnlChart.destroy();
         dailyPnlChart = createBarChart('dailyPnlChart', data.dates, data.pnl, 'Daglig P&L (EUR)');
     }
 
-    loadBalance('{{ bots[0] if bots else "" }}');
+    loadBalance();
     loadDailyPnl();
 </script>
 {% endblock %}

@@ -2,7 +2,7 @@
 {% block title %}Statistik - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>Statistik</h1>
+<h1>Statistik{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
 <div class="kpi-grid">
     <div class="kpi-card">
@@ -68,7 +68,7 @@
 {% block scripts %}
 <script>
     async function loadCumulativePnl() {
-        const resp = await fetch('/api/daily-pnl?days=90');
+        const resp = await fetch(apiUrl('/api/daily-pnl', {days: 90}));
         const data = await resp.json();
         createLineChart('cumulativePnlChart', data.dates, data.cumulative, 'Kumulativ P&L (EUR)', '#00d4aa');
     }

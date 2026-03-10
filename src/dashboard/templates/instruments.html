@@ -2,14 +2,7 @@
 {% block title %}Coins - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>Coins</h1>
-
-<div class="bot-selector" style="margin-bottom: 1rem;">
-    {% for bot in bots %}
-    <button class="btn-bot{% if loop.first %} active{% endif %}" onclick="loadInstruments('{{ bot }}', this)">{{ bot|upper }}</button>
-    {% endfor %}
-    <button class="btn-bot" onclick="loadInstruments('', this)">Alle</button>
-</div>
+<h1>Coins{% if current_bot %} <span class="page-bot-label">{{ bot_labels.get(current_bot, current_bot) }}</span>{% endif %}</h1>
 
 <div class="chart-card">
     <h3>P&L per Coin</h3>
@@ -38,17 +31,10 @@
 <script>
     let instChart;
 
-    async function loadInstruments(bot, btn) {
-        if (btn) {
-            document.querySelectorAll('.bot-selector .btn-bot').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-        }
-
-        const url = bot ? `/api/instruments?bot=${bot}` : '/api/instruments';
-        const resp = await fetch(url);
+    async function loadInstruments() {
+        const resp = await fetch(apiUrl('/api/instruments'));
         const data = await resp.json();
 
-        // Chart
         const labels = data.map(d => d.epic);
         const values = data.map(d => d.total_pl);
         const colors = values.map(v => v >= 0 ? '#00d4aa' : '#ff4757');
@@ -72,7 +58,6 @@
             }
         });
 
-        // Table
         document.getElementById('instrumentsBody').innerHTML = data.map(d => {
             const plClass = d.total_pl >= 0 ? 'positive' : 'negative';
             return `<tr>
@@ -86,6 +71,6 @@
         }).join('');
     }
 
-    loadInstruments('{{ bots[0] if bots else "" }}');
+    loadInstruments();
 </script>
 {% endblock %}

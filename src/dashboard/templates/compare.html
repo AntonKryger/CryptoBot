@@ -2,12 +2,12 @@
 {% block title %}Sammenlign - CryptoBot Dashboard{% endblock %}
 
 {% block content %}
-<h1>Rule Bot vs AI Bot</h1>
+<h1>Sammenlign Bots</h1>
 
 <div class="compare-grid">
     {% for bot_name, bot_data in comparison.items() %}
     <div class="compare-card">
-        <h2>{{ bot_name|upper }} Bot</h2>
+        <h2>{{ bot_labels.get(bot_name, bot_name|upper) }}</h2>
         <div class="compare-stats">
             <div class="compare-row">
                 <span>Win Rate</span>
@@ -79,32 +79,37 @@
 {% block scripts %}
 <script>
     async function loadCompareBalance() {
-        const colors = ['#00d4aa', '#ffa502'];
+        const botColors = {
+            'rule': '#00d4aa',
+            'ai': '#ffa502',
+            'demo': '#5f9df7',
+        };
+        const botLabels = {{ bot_labels | tojson }};
         const datasets = [];
-        let idx = 0;
+        let longestTimestamps = [];
 
-        {% for bot_name in comparison %}
-        const resp{{ loop.index }} = await fetch('/api/balance?bot={{ bot_name }}');
-        const data{{ loop.index }} = await resp{{ loop.index }}.json();
-        datasets.push({
-            label: '{{ bot_name|upper }}',
-            data: data{{ loop.index }}.balances,
-            borderColor: colors[idx],
-            backgroundColor: 'transparent',
-            tension: 0.3,
-            pointRadius: 0,
-        });
-        idx++;
-        {% endfor %}
-
-        // Use longest timestamp array
-        const allTimestamps = datasets.length > 0 ?
-            {% for bot_name in comparison %}{% if loop.first %}data{{ loop.index }}.timestamps{% endif %}{% endfor %} : [];
+        for (const botKey of Object.keys(botLabels)) {
+            try {
+                const resp = await fetch(`/api/balance?bot=${botKey}`);
+                const data = await resp.json();
+                if (data.timestamps.length > longestTimestamps.length) {
+                    longestTimestamps = data.timestamps;
+                }
+                datasets.push({
+                    label: botLabels[botKey],
+                    data: data.balances,
+                    borderColor: botColors[botKey] || '#e0e0e0',
+                    backgroundColor: 'transparent',
+                    tension: 0.3,
+                    pointRadius: 0,
+                });
+            } catch (e) {}
+        }
 
         const ctx = document.getElementById('compareBalanceChart').getContext('2d');
         new Chart(ctx, {
             type: 'line',
-            data: { labels: allTimestamps, datasets },
+            data: { labels: longestTimestamps, datasets },
             options: chartDefaults
         });
     }
