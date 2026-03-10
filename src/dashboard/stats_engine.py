@@ -45,7 +45,11 @@ class StatsEngine:
                 db.close()
         if not frames:
             return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
+        # Ensure profit_loss is numeric (NULL -> NaN)
+        if "profit_loss" in combined.columns:
+            combined["profit_loss"] = pd.to_numeric(combined["profit_loss"], errors="coerce")
+        return combined
 
     def _load_balances(self, bot_name=None):
         """Load balance snapshots as DataFrame."""
@@ -67,61 +71,79 @@ class StatsEngine:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True)
 
+    def _closed_with_pl(self, df):
+        """Get closed trades that have profit_loss data (not NULL)."""
+        if df.empty:
+            return pd.DataFrame()
+        closed = df[df["status"] == "CLOSED"].copy()
+        if closed.empty:
+            return closed
+        return closed[closed["profit_loss"].notna()]
+
     def get_overview(self, bot_name=None):
         """KPI overview: win rate, total P&L, open trades, today's P&L."""
         df = self._load_trades(bot_name)
         if df.empty:
             return {
                 "total_trades": 0, "open_trades": 0, "closed_trades": 0,
+                "closed_with_pl": 0,
                 "win_rate": 0, "total_pl": 0, "today_pl": 0,
                 "avg_win": 0, "avg_loss": 0, "profit_factor": 0,
             }
 
-        closed = df[df["status"] == "CLOSED"].copy()
+        all_closed = df[df["status"] == "CLOSED"]
         open_trades = df[df["status"] == "OPEN"]
+        closed = self._closed_with_pl(df)
 
-        wins = closed[closed["profit_loss"] > 0]
-        losses = closed[closed["profit_loss"] < 0]
+        wins = closed[closed["profit_loss"] > 0] if not closed.empty else pd.DataFrame()
+        losses = closed[closed["profit_loss"] < 0] if not closed.empty else pd.DataFrame()
 
         total_wins = wins["profit_loss"].sum() if not wins.empty else 0
         total_losses = abs(losses["profit_loss"].sum()) if not losses.empty else 0
 
         # Today's P&L
         today = datetime.now().strftime("%Y-%m-%d")
-        today_closed = closed[closed["exit_timestamp"].str.startswith(today, na=False)] if "exit_timestamp" in closed.columns else pd.DataFrame()
-        today_pl = today_closed["profit_loss"].sum() if not today_closed.empty else 0
+        today_pl = 0
+        if not closed.empty and "exit_timestamp" in closed.columns:
+            today_closed = closed[closed["exit_timestamp"].str.startswith(today, na=False)]
+            today_pl = today_closed["profit_loss"].sum() if not today_closed.empty else 0
 
         return {
             "total_trades": len(df),
             "open_trades": len(open_trades),
-            "closed_trades": len(closed),
+            "closed_trades": len(all_closed),
+            "closed_with_pl": len(closed),
             "win_rate": round(len(wins) / max(len(closed), 1) * 100, 1),
             "total_pl": round(closed["profit_loss"].sum(), 2) if not closed.empty else 0,
-            "today_pl": round(today_pl, 2),
-            "avg_win": round(wins["profit_loss"].mean(), 2) if not wins.empty else 0,
-            "avg_loss": round(losses["profit_loss"].mean(), 2) if not losses.empty else 0,
+            "today_pl": round(float(today_pl), 2),
+            "avg_win": round(float(wins["profit_loss"].mean()), 2) if not wins.empty else 0,
+            "avg_loss": round(float(losses["profit_loss"].mean()), 2) if not losses.empty else 0,
             "profit_factor": round(total_wins / max(total_losses, 0.01), 2),
         }
 
     def get_detailed_stats(self, bot_name=None):
         """Extended statistics: streaks, drawdown, Sharpe."""
         df = self._load_trades(bot_name)
-        closed = df[df["status"] == "CLOSED"].copy() if not df.empty else pd.DataFrame()
+        closed = self._closed_with_pl(df)
+
+        empty_result = {
+            "max_win_streak": 0, "max_loss_streak": 0, "current_streak": 0,
+            "current_streak_type": "none", "max_drawdown": 0, "sharpe_ratio": 0,
+            "best_trade": 0, "worst_trade": 0,
+        }
 
         if closed.empty:
-            return {
-                "max_win_streak": 0, "max_loss_streak": 0, "current_streak": 0,
-                "current_streak_type": "none", "max_drawdown": 0, "sharpe_ratio": 0,
-                "best_trade": 0, "worst_trade": 0, "avg_hold_time": "N/A",
-            }
+            return empty_result
 
         # Sort by exit time
         closed = closed.sort_values("exit_timestamp")
-        pls = closed["profit_loss"].tolist()
+        pls = closed["profit_loss"].dropna().tolist()
+
+        if not pls:
+            return empty_result
 
         # Streaks
-        max_win, max_loss, cur = 0, 0, 0
-        cur_type = "none"
+        max_win, max_loss = 0, 0
         win_streak, loss_streak = 0, 0
         for pl in pls:
             if pl > 0:
@@ -136,31 +158,30 @@ class StatsEngine:
             max_win = max(max_win, win_streak)
             max_loss = max(max_loss, loss_streak)
 
-        if pls:
-            last = pls[-1]
-            cur_type = "win" if last > 0 else "loss" if last < 0 else "even"
-            # Count current streak
-            cur = 0
-            for pl in reversed(pls):
-                if (cur_type == "win" and pl > 0) or (cur_type == "loss" and pl < 0):
-                    cur += 1
-                else:
-                    break
+        # Current streak
+        last = pls[-1]
+        cur_type = "win" if last > 0 else "loss" if last < 0 else "even"
+        cur = 0
+        for pl in reversed(pls):
+            if (cur_type == "win" and pl > 0) or (cur_type == "loss" and pl < 0):
+                cur += 1
+            else:
+                break
 
         # Max drawdown from cumulative P&L
         cum_pl = closed["profit_loss"].cumsum()
         running_max = cum_pl.cummax()
         drawdown = running_max - cum_pl
-        max_dd = round(drawdown.max(), 2) if not drawdown.empty else 0
+        max_dd = round(float(drawdown.max()), 2) if not drawdown.empty else 0
 
-        # Simple Sharpe (daily returns approximation)
+        # Simple Sharpe
         sharpe = 0
-        if len(closed) >= 5:
+        if len(pls) >= 5:
             returns = closed["profit_loss"]
             mean_r = returns.mean()
             std_r = returns.std()
-            if std_r > 0:
-                sharpe = round(mean_r / std_r * (252 ** 0.5), 2)  # Annualized
+            if std_r and std_r > 0:
+                sharpe = round(float(mean_r / std_r * (252 ** 0.5)), 2)
 
         return {
             "max_win_streak": max_win,
@@ -169,15 +190,19 @@ class StatsEngine:
             "current_streak_type": cur_type,
             "max_drawdown": max_dd,
             "sharpe_ratio": sharpe,
-            "best_trade": round(closed["profit_loss"].max(), 2) if not closed.empty else 0,
-            "worst_trade": round(closed["profit_loss"].min(), 2) if not closed.empty else 0,
+            "best_trade": round(float(closed["profit_loss"].max()), 2),
+            "worst_trade": round(float(closed["profit_loss"].min()), 2),
         }
 
     def get_daily_pnl(self, bot_name=None, days=30):
         """Daily P&L for the last N days."""
         df = self._load_trades(bot_name)
-        closed = df[df["status"] == "CLOSED"].copy() if not df.empty else pd.DataFrame()
+        closed = self._closed_with_pl(df)
 
+        if closed.empty:
+            return {"dates": [], "pnl": [], "cumulative": []}
+
+        closed = closed[closed["exit_timestamp"].notna()].copy()
         if closed.empty:
             return {"dates": [], "pnl": [], "cumulative": []}
 
@@ -188,14 +213,14 @@ class StatsEngine:
 
         return {
             "dates": [str(d) for d in daily["date"]],
-            "pnl": [round(v, 2) for v in daily["profit_loss"]],
-            "cumulative": [round(v, 2) for v in daily["cumulative"]],
+            "pnl": [round(float(v), 2) for v in daily["profit_loss"]],
+            "cumulative": [round(float(v), 2) for v in daily["cumulative"]],
         }
 
     def get_instrument_stats(self, bot_name=None):
         """Per-instrument breakdown."""
         df = self._load_trades(bot_name)
-        closed = df[df["status"] == "CLOSED"].copy() if not df.empty else pd.DataFrame()
+        closed = self._closed_with_pl(df)
 
         if closed.empty:
             return []
@@ -208,8 +233,8 @@ class StatsEngine:
                 "trades": len(group),
                 "wins": len(wins),
                 "win_rate": round(len(wins) / max(len(group), 1) * 100, 1),
-                "total_pl": round(group["profit_loss"].sum(), 2),
-                "avg_pl": round(group["profit_loss"].mean(), 2),
+                "total_pl": round(float(group["profit_loss"].sum()), 2),
+                "avg_pl": round(float(group["profit_loss"].mean()), 2),
             })
 
         return sorted(results, key=lambda x: x["total_pl"], reverse=True)
@@ -217,8 +242,12 @@ class StatsEngine:
     def get_calendar_data(self, bot_name=None):
         """Daily P&L for calendar heatmap."""
         df = self._load_trades(bot_name)
-        closed = df[df["status"] == "CLOSED"].copy() if not df.empty else pd.DataFrame()
+        closed = self._closed_with_pl(df)
 
+        if closed.empty:
+            return []
+
+        closed = closed[closed["exit_timestamp"].notna()].copy()
         if closed.empty:
             return []
 
@@ -229,7 +258,7 @@ class StatsEngine:
         ).reset_index()
 
         return [
-            {"date": row["date"], "pnl": round(row["pnl"], 2), "trades": int(row["trades"])}
+            {"date": row["date"], "pnl": round(float(row["pnl"]), 2), "trades": int(row["trades"])}
             for _, row in daily.iterrows()
         ]
 
@@ -240,14 +269,17 @@ class StatsEngine:
             return []
 
         if epic:
-            df = df[df["epic"] == epic]
+            df = df[df["epic"].str.contains(epic, case=False, na=False)]
         if direction:
             df = df[df["direction"] == direction]
         if status:
             df = df[df["status"] == status]
 
         df = df.sort_values("timestamp", ascending=False).head(limit)
-        return df.to_dict(orient="records")
+
+        # Convert NaN to None for JSON serialization
+        result = df.where(df.notna(), None).to_dict(orient="records")
+        return result
 
     def get_balance_history(self, bot_name=None, hours=168):
         """Get balance history for chart."""
@@ -264,7 +296,7 @@ class StatsEngine:
 
         return {
             "timestamps": [t.isoformat() for t in df["timestamp"]],
-            "balances": [round(b, 2) for b in df["balance"]],
+            "balances": [round(float(b), 2) for b in df["balance"]],
         }
 
     def get_comparison(self):
