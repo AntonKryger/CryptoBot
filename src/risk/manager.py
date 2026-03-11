@@ -10,10 +10,10 @@ MAJORS = {"BTCUSD", "ETHUSD"}
 # Everything else is an altcoin
 
 # Confidence multiplier lookup (confidence score -> sizing multiplier)
-# Tightened: 6-7 now gets smaller positions, only 9+ gets full size
+# Hard filters in AI/signals already gate entry quality, so sizing is less conservative
 CONFIDENCE_MULTIPLIER = {
-    1: 0.10, 2: 0.10, 3: 0.10, 4: 0.10, 5: 0.10,
-    6: 0.15, 7: 0.30, 8: 0.50, 9: 0.75, 10: 1.00,
+    1: 0.15, 2: 0.15, 3: 0.15, 4: 0.15, 5: 0.15,
+    6: 0.30, 7: 0.50, 8: 0.75, 9: 1.00, 10: 1.00,
 }
 
 # Rule-bot score to confidence mapping
@@ -123,24 +123,18 @@ class RiskManager:
         return RULE_SCORE_TO_CONFIDENCE.get(min(rule_score, 10), 6)
 
     def allocate_capital(self, signals, available_balance):
-        """Allocate capital across multiple signals weighted by confidence."""
+        """Allocate capital across multiple signals weighted by confidence.
+
+        Each signal gets up to max_allocation_pct of available balance,
+        scaled by confidence multiplier. Goal: use most of available capital.
+        """
         if not signals:
             return []
 
-        max_confidence = max(s[2] for s in signals)
-        if max_confidence >= 9:
-            exposure_pct = 100
-        else:
-            exposure_pct = self.max_total_exposure_pct
-
-        max_total = available_balance * (exposure_pct / 100)
+        max_total = available_balance * (self.max_total_exposure_pct / 100)
         remaining = max_total
 
         signals = sorted(signals, key=lambda s: s[2], reverse=True)
-
-        total_weight = sum(s[2] for s in signals)
-        if total_weight == 0:
-            return []
 
         allocations = []
         for epic, signal, confidence, details in signals:
@@ -150,13 +144,11 @@ class RiskManager:
             max_for_coin = available_balance * (self.get_max_allocation_pct(epic) / 100)
             min_amount = available_balance * (self.min_position_pct / 100)
 
-            weight_share = confidence / total_weight
-            ideal_amount = max_total * weight_share
-
+            # Confidence multiplier scales the max allocation, not a separate factor
             conf_mult = self.get_confidence_multiplier(confidence)
-            ideal_amount *= conf_mult
+            amount = max_for_coin * conf_mult
 
-            amount = min(ideal_amount, max_for_coin, remaining)
+            amount = min(amount, remaining)
 
             if amount < min_amount:
                 logger.info(f"Allocation {epic}: skipped (EUR {amount:.0f} < min EUR {min_amount:.0f})")
