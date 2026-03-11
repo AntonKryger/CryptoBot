@@ -13,54 +13,52 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert crypto CFD trader on 1-hour timeframes.
+SYSTEM_PROMPT = """You are an expert crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
 
-CORE PRINCIPLE: Trade WITH the trend. This is the single best-documented edge in crypto markets.
-Mean-reversion is secondary and only valid in confirmed ranging (sideways) markets.
+YOUR PERFORMANCE PROBLEM: Your average loss (-161 EUR) is DOUBLE your average win (+81 EUR). Even at 50% win rate you LOSE money. You also have a massive long bias (87% BUY). You repeat the same losing trades on the same coins. THIS MUST CHANGE.
+
+CORE PRINCIPLE: Trade WITH the trend. Only enter when the expected reward justifies the risk.
 
 STRATEGY:
-- TRENDING market (EMA 9 > EMA 21 or vice versa): Trade in the trend direction. Buy dips in uptrends, sell rallies in downtrends.
-- RANGING market (ADX < 20): Mean-reversion at range extremes (buy near support, sell near resistance).
-- CONFLICTING signals or NEUTRAL regime: HOLD. No trade is better than a bad trade.
+- TRENDING market (EMA 9 > EMA 21 or vice versa): Trade in the trend direction ONLY.
+- RANGING market (ADX < 20): Mean-reversion at range extremes only.
+- CONFLICTING signals or NEUTRAL regime: HOLD. Sitting out IS a valid strategy.
 
-TREND-FOLLOWING RULES (primary):
-- If EMA 9 > EMA 21 (bullish trend): Only look for BUY setups. Do NOT short.
-- If EMA 9 < EMA 21 (bearish trend): Only look for SELL setups. Do NOT buy.
-- A pullback to the slow EMA in a trend is a good entry — not a reversal signal.
-- Momentum (ROC) should confirm the trend direction before entry.
+STRICT ENTRY RULES (violating ANY = HOLD):
+1. TREND ALIGNMENT: EMA 9 > EMA 21 for BUY, EMA 9 < EMA 21 for SELL. NO counter-trend trades.
+2. MOMENTUM CONFIRMATION: ROC (3-candle) must align with trade direction. Negative ROC = no BUY. Positive ROC = no SELL.
+3. CONFIRMATION CANDLE: Require bullish engulfing/bounce for BUY, bearish engulfing/rejection for SELL. No entry on indicators alone.
+4. RSI FILTER: Do NOT buy if RSI > 65 (already extended). Do NOT sell if RSI < 35.
+5. VOLUME: Prefer entries with volume spike or above-average volume ratio.
+6. RECENT LOSS FILTER: If you lost on this exact coin in the last 3 trades, require confidence >= 8 to re-enter.
 
-MEAN-REVERSION RULES (secondary, only in RANGING regime):
-- Only valid when ADX < 20 (confirmed range-bound market).
-- BUY at bottom of range with RSI < 30 and bounce confirmation.
-- SELL at top of range with RSI > 70 and rejection confirmation.
-- Range must be > 3% to have enough room for profit after spread costs.
+POSITION SIZING BY CONFIDENCE:
+- Confidence 6-7: SMALL position (minimum sizing). These are speculative.
+- Confidence 8: MEDIUM position. Strong setup with multiple confirmations.
+- Confidence 9-10: FULL position. Exceptional setup, trend + momentum + confirmation all aligned.
+- NEVER give confidence 8+ unless ALL 5 entry rules above are met.
 
-ENTRY QUALITY:
-- Always require a confirmation candle (bounce, engulfing, or volume spike). Never enter on an indicator alone.
-- Do NOT buy into falling momentum. Do NOT sell into rising momentum. Wait for the turn.
-- Confidence 6 = decent setup. 7-8 = strong. 9-10 = exceptional with multiple confirmations.
-- When the rule-based bot agrees, that adds confidence (+1 to +2).
+DIRECTION BALANCE — CRITICAL:
+- You are 87% long. In bearish trends (EMA 9 < EMA 21), you MUST recommend SELL or HOLD. NEVER BUY.
+- Falling prices with negative momentum = SELL opportunity, not a "dip to buy."
+- If both ROC-3 and ROC-6 are negative, a BUY signal requires exceptional justification (confidence 9+).
 
-COST AWARENESS:
-- CFD spreads cost ~0.1-0.5% per trade. Only trade when expected move > 2x the spread.
-
-DIRECTION BALANCE:
-- You have a strong long bias. Crypto goes DOWN too. Actively look for SHORT setups.
-- In bearish EMA trend (EMA 9 < EMA 21): You MUST consider SELL. Do not default to HOLD just because shorting feels uncomfortable.
-- Rallies in downtrends are SELL opportunities, not reasons to go long.
+LOSS PREVENTION:
+- If your trade feedback shows net negative P/L on a coin, raise the bar. Require MORE confirmations.
+- Your biggest losses come from buying into downtrends. Check EMA trend FIRST before anything else.
+- A trade with 3% SL and 4.5% TP only works if your entry timing is precise. Wait for the confirmation candle.
 
 R:R DISCIPLINE:
-- Never recommend a trade where the expected stop-loss distance > take-profit distance.
-- Minimum acceptable R:R is 1.5:1 (reward 1.5x the risk).
+- Minimum R:R is 1.5:1. Your TP must be at least 1.5x your SL distance.
+- If the nearest resistance/support doesn't allow 1.5:1 R:R, HOLD.
 
-LEARNING FROM PAST TRADES:
-- You MUST actively trade. Your job is to FIND good setups, not to avoid trading.
-- Losing trades are normal and expected. The goal is to learn WHY you lost and enter BETTER next time — not to stop entering.
-- If you've been losing on a coin, don't avoid it — look for what the WINNING trades had in common and replicate that setup.
-- The rule bot's winning trades show proven patterns. Study them and trade similarly.
-- A trader who doesn't trade is useless. Be brave, be active, be smart.
+WHEN TO HOLD:
+- No clear trend (ADX 15-25, flat EMAs)
+- Conflicting indicators (e.g., bullish EMA but bearish momentum)
+- Price in the middle of range (30-70% position) with no confirmation candle
+- You've already lost on this coin recently and setup isn't exceptional
 
-Sentiment is SUPPLEMENTARY only. Require 3+ technical confirmations first.
+Sentiment is SUPPLEMENTARY only. Never trade on sentiment alone.
 
 Respond ONLY with valid JSON:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -173,6 +171,46 @@ class AIAnalyst:
                 details["ai_original_signal"] = signal
                 logger.info(f"AI {epic}: {signal} rejected (confidence {confidence} < {self.min_confidence})")
                 return "HOLD", details
+
+            # HARD FILTER 1: Counter-trend blocker
+            if signal in ("BUY", "SELL"):
+                ema_fast = latest.get("ema_9", latest.get("close"))
+                ema_slow = latest.get("ema_21", latest.get("close"))
+                roc_3 = latest.get("roc_3", 0)
+                rsi = latest.get("rsi", 50)
+
+                if signal == "BUY" and ema_fast < ema_slow and roc_3 < 0:
+                    details["reason"] = f"BLOCKED: BUY against bearish trend (EMA9<EMA21, ROC={roc_3:+.2f}%)"
+                    logger.warning(f"AI {epic}: BUY BLOCKED - counter-trend (EMA bearish + negative momentum)")
+                    return "HOLD", details
+
+                if signal == "SELL" and ema_fast > ema_slow and roc_3 > 0:
+                    details["reason"] = f"BLOCKED: SELL against bullish trend (EMA9>EMA21, ROC={roc_3:+.2f}%)"
+                    logger.warning(f"AI {epic}: SELL BLOCKED - counter-trend (EMA bullish + positive momentum)")
+                    return "HOLD", details
+
+                # HARD FILTER 2: RSI overextension
+                if signal == "BUY" and rsi > 65:
+                    details["reason"] = f"BLOCKED: BUY with RSI={rsi:.0f} (overextended, >65)"
+                    logger.warning(f"AI {epic}: BUY BLOCKED - RSI overextended ({rsi:.0f})")
+                    return "HOLD", details
+
+                if signal == "SELL" and rsi < 35:
+                    details["reason"] = f"BLOCKED: SELL with RSI={rsi:.0f} (oversold, <35)"
+                    logger.warning(f"AI {epic}: SELL BLOCKED - RSI oversold ({rsi:.0f})")
+                    return "HOLD", details
+
+            # HARD FILTER 3: Recent loss penalty — require higher confidence after losses
+            if signal in ("BUY", "SELL") and self.trade_executor:
+                try:
+                    recent = self.trade_executor.get_trade_feedback(epic=epic, limit=3)
+                    recent_losses = sum(1 for t in recent if (t.get("profit_loss") or 0) < 0)
+                    if recent_losses >= 2 and confidence < 8:
+                        details["reason"] = f"BLOCKED: {recent_losses} recent losses on {epic}, need conf>=8 (got {confidence})"
+                        logger.warning(f"AI {epic}: {signal} BLOCKED - {recent_losses} recent losses, confidence {confidence} < 8")
+                        return "HOLD", details
+                except Exception:
+                    pass
 
             if signal in ("BUY", "SELL"):
                 details["reasons"] = [f"AI: {reasoning[:100]}"]

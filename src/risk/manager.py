@@ -10,9 +10,10 @@ MAJORS = {"BTCUSD", "ETHUSD"}
 # Everything else is an altcoin
 
 # Confidence multiplier lookup (confidence score -> sizing multiplier)
+# Tightened: 6-7 now gets smaller positions, only 9+ gets full size
 CONFIDENCE_MULTIPLIER = {
-    1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25, 5: 0.25,
-    6: 0.25, 7: 0.50, 8: 0.75, 9: 1.00, 10: 1.00,
+    1: 0.10, 2: 0.10, 3: 0.10, 4: 0.10, 5: 0.10,
+    6: 0.15, 7: 0.30, 8: 0.50, 9: 0.75, 10: 1.00,
 }
 
 # Rule-bot score to confidence mapping
