@@ -240,180 +240,132 @@ class TradeExecutor:
             logger.error(f"Failed to update trade close in DB: {e}")
 
     def reconcile_closed_trades(self):
-        """Sync DB with Capital.com: close OPEN trades that no longer exist,
-        and backfill P/L for any CLOSED trades missing exit data.
+        """Sync DB with Capital.com: close OPEN trades and backfill missing P/L.
 
-        Matching strategy:
-        1. By deal_id (works for new trades that store Capital.com dealId)
-        2. By epic + OPEN status (fallback for old trades with dealReference)
+        Uses transaction history ('Trade closed' entries) matched by epic + timestamp
+        to get actual P/L in EUR from Capital.com.
         """
         from datetime import timedelta
         try:
             # Get currently active positions on Capital.com
             positions = self.client.get_positions()
-            active_positions = {}  # dealId -> position data
+            active_epics = set()
+            active_deal_ids = set()
             for pos in positions.get("positions", []):
-                pid = pos["position"]["dealId"]
-                active_positions[pid] = pos
+                active_epics.add(pos["market"]["epic"])
+                active_deal_ids.add(pos["position"]["dealId"])
 
-            # Build activity map from Capital.com history (keyed by epic for matching)
-            activity_by_epic = self._fetch_activity_map()
+            # Fetch transaction history (contains actual P/L for closed trades)
+            closes_by_epic = self._fetch_transaction_closes()
 
             db = self._get_db()
 
-            # --- Step 1: Reconcile OPEN trades that are no longer on Capital.com ---
+            # --- Step 1: Close OPEN trades that are no longer on Capital.com ---
             cursor = db.execute(
-                "SELECT id, deal_id, epic, entry_price, direction, size "
-                "FROM trades WHERE status = 'OPEN'"
+                "SELECT id, deal_id, epic, entry_price, direction, size, timestamp "
+                "FROM trades WHERE status = 'OPEN' ORDER BY timestamp"
             )
             open_trades = cursor.fetchall()
 
             reconciled = 0
-            for trade_id, deal_id, epic, entry_price, direction, size in open_trades:
-                # Check if this trade is still active
-                if deal_id in active_positions:
-                    continue  # Still open, skip
+            for trade_id, deal_id, epic, entry_price, direction, size, ts in open_trades:
+                if deal_id in active_deal_ids or epic in active_epics:
+                    continue  # Still active
 
-                # Also check if epic has any active position (for old dealReference matches)
-                epic_still_open = any(
-                    p["market"]["epic"] == epic for p in active_positions.values()
+                # Find matching close transaction
+                profit_loss, exit_ts, new_deal_id = self._match_close(
+                    epic, ts, closes_by_epic
                 )
-                if epic_still_open:
-                    continue  # Epic still has an open position
-
-                # Trade is closed on Capital.com — find exit data from activity
-                exit_price = None
-                profit_loss = None
-                exit_ts = None
-
-                # Try activity history
-                epic_activities = activity_by_epic.get(epic, [])
-                for act in epic_activities:
-                    if act.get("type") == "close":
-                        exit_price = act.get("level")
-                        exit_ts = act.get("date")
-                        # Calculate P/L from prices
-                        if exit_price and entry_price and size:
-                            if direction == "BUY":
-                                profit_loss = round((exit_price - entry_price) * size, 2)
-                            else:
-                                profit_loss = round((entry_price - exit_price) * size, 2)
-                        break
-
-                # If no activity data, try to get current account balance for estimation
-                if profit_loss is None and entry_price and size:
-                    # Use account balance change as last resort — mark as estimated
-                    logger.warning(f"Reconcile {epic}: no activity data, marking as closed without P/L")
 
                 db.execute("""
                     UPDATE trades SET status = 'CLOSED',
                     exit_timestamp = COALESCE(?, ?),
-                    exit_price = ?,
-                    profit_loss = ?
+                    profit_loss = ?,
+                    deal_id = COALESCE(?, deal_id)
                     WHERE id = ?
-                """, (exit_ts, datetime.now().isoformat(), exit_price, profit_loss, trade_id))
+                """, (exit_ts, datetime.now().isoformat(), profit_loss, new_deal_id, trade_id))
                 reconciled += 1
                 pl_str = f"P/L: EUR {profit_loss:+.2f}" if profit_loss is not None else "P/L: unknown"
                 logger.info(f"Reconciled {epic} (id={trade_id}) as CLOSED ({pl_str})")
 
             # --- Step 2: Backfill CLOSED trades missing P/L ---
             cursor2 = db.execute(
-                "SELECT id, epic, entry_price, direction, size, deal_id "
-                "FROM trades WHERE status = 'CLOSED' AND (profit_loss IS NULL OR exit_price IS NULL)"
+                "SELECT id, epic, timestamp FROM trades "
+                "WHERE status = 'CLOSED' AND profit_loss IS NULL ORDER BY timestamp"
             )
             missing = cursor2.fetchall()
             backfilled = 0
 
-            for trade_id, epic, entry_price, direction, size, deal_id in missing:
-                epic_activities = activity_by_epic.get(epic, [])
-                for act in epic_activities:
-                    if act.get("type") == "close" and act.get("level"):
-                        exit_price = act["level"]
-                        profit_loss = None
-                        if entry_price and size:
-                            if direction == "BUY":
-                                profit_loss = round((exit_price - entry_price) * size, 2)
-                            else:
-                                profit_loss = round((entry_price - exit_price) * size, 2)
-                        db.execute("""
-                            UPDATE trades SET
-                            exit_price = COALESCE(?, exit_price),
-                            profit_loss = COALESCE(?, profit_loss),
-                            balance_after = (
-                                SELECT balance_after FROM trades
-                                WHERE balance_after IS NOT NULL
-                                ORDER BY id DESC LIMIT 1
-                            )
-                            WHERE id = ?
-                        """, (exit_price, profit_loss, trade_id))
-                        backfilled += 1
-                        logger.info(f"Backfilled {epic} (id={trade_id}): exit={exit_price}, P/L={profit_loss}")
-                        break
+            for trade_id, epic, ts in missing:
+                profit_loss, exit_ts, new_deal_id = self._match_close(
+                    epic, ts, closes_by_epic
+                )
+                if profit_loss is not None:
+                    db.execute("""
+                        UPDATE trades SET profit_loss = ?,
+                        exit_timestamp = COALESCE(?, exit_timestamp),
+                        deal_id = COALESCE(?, deal_id)
+                        WHERE id = ?
+                    """, (profit_loss, exit_ts, new_deal_id, trade_id))
+                    backfilled += 1
 
             if reconciled > 0 or backfilled > 0:
-                # Update balance_after for newly closed trades
                 self._update_balance_after(db)
                 db.commit()
-                logger.info(f"Reconciliation done: {reconciled} closed, {backfilled} backfilled")
+                logger.info(f"Reconciliation: {reconciled} closed, {backfilled} backfilled")
             db.close()
         except Exception as e:
             logger.error(f"Trade reconciliation failed: {e}")
 
-    def _fetch_activity_map(self):
-        """Fetch activity history from Capital.com, grouped by epic.
-        Returns: {epic: [{"type": "open"|"close", "level": float, "date": str, ...}]}
+    def _fetch_transaction_closes(self):
+        """Fetch 'Trade closed' transactions from Capital.com, grouped by epic.
+        Returns: {epic: [{"pl": float, "date": str, "dealId": str, "used": bool}]}
         """
         from datetime import timedelta
         result = {}
         try:
             from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
-            activities = self.client.get_activity_history(from_date=from_date)
-
-            for act in activities.get("activities", []):
-                if act.get("type") != "POSITION":
+            to_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            resp = self.client._request("GET", "/api/v1/history/transactions", params={
+                "from": from_date, "to": to_date, "maxSpanSeconds": "2592000"
+            })
+            for tx in resp.get("transactions", []):
+                if tx.get("note") != "Trade closed" or tx.get("transactionType") != "TRADE":
                     continue
-                epic = act.get("epic")
+                epic = tx.get("instrumentName")
                 if not epic:
                     continue
-                details = act.get("details", {})
-                level = details.get("level")
-                open_price = details.get("openPrice")
-                direction = details.get("direction")
-                size = details.get("size")
-                date = act.get("dateUTC") or act.get("date")
-
+                pl = float(tx.get("size", 0))
+                date = tx.get("dateUtc", "")
+                deal_id = tx.get("dealId", "")
                 if epic not in result:
                     result[epic] = []
-
-                # If openPrice exists, this is a close (Capital.com includes open price on closes)
-                if open_price and level:
-                    result[epic].append({
-                        "type": "close",
-                        "level": float(level),
-                        "open_price": float(open_price),
-                        "direction": direction,
-                        "size": float(size) if size else None,
-                        "date": date,
-                        "dealId": act.get("dealId"),
-                    })
-                elif level:
-                    result[epic].append({
-                        "type": "open",
-                        "level": float(level),
-                        "direction": direction,
-                        "size": float(size) if size else None,
-                        "date": date,
-                        "dealId": act.get("dealId"),
-                    })
+                result[epic].append({"pl": pl, "date": date, "dealId": deal_id, "used": False})
+            # Sort by date so we match chronologically
+            for epic in result:
+                result[epic].sort(key=lambda x: x["date"])
+            total = sum(len(v) for v in result.values())
+            if total:
+                logger.info(f"Fetched {total} trade closes from transaction history")
         except Exception as e:
-            logger.error(f"Activity history fetch failed: {e}")
-
-        if result:
-            logger.info(f"Activity map: {sum(len(v) for v in result.values())} events across {len(result)} epics")
+            logger.error(f"Transaction history fetch failed: {e}")
         return result
 
+    def _match_close(self, epic, open_timestamp, closes_by_epic):
+        """Find the earliest unused close transaction for an epic after open_timestamp.
+        Returns: (profit_loss, exit_timestamp, deal_id) or (None, None, None)
+        """
+        epic_closes = closes_by_epic.get(epic, [])
+        for close in epic_closes:
+            if close["used"]:
+                continue
+            if close["date"] >= open_timestamp[:19]:
+                close["used"] = True
+                return close["pl"], close["date"], close["dealId"]
+        return None, None, None
+
     def _update_balance_after(self, db):
-        """Update balance_after for closed trades that don't have it, using current account balance."""
+        """Update balance_after for closed trades using current account balance."""
         try:
             balance_data = self.client.get_account_balance()
             current_balance = balance_data.get("balance", 0)
