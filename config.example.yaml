@@ -1,13 +1,22 @@
 # CryptoBot Configuration
-# Copy this file to config.yaml and fill in your details
+# Copy to config.yaml (rule/live bot) or config_ai.yaml (AI bot)
 
 # Capital.com API
 capital:
   email: "your-email@example.com"
   password: "your-password"
   api_key: "your-api-key"
-  demo: true  # true = demo account, false = live account
-  base_url: "https://demo-api-capital.backend-capital.com"  # demo server
+  demo: true  # true = demo, false = live
+  base_url: "https://demo-api-capital.backend-capital.com"
+  # account_name: "CryptoBot AI"  # only for AI bot (switches account)
+
+# AI settings (only for config_ai.yaml)
+# ai:
+#   anthropic_api_key: "sk-ant-..."
+#   model: "claude-haiku-4-5-20251001"
+#   max_tokens: 300
+#   min_confidence: 6
+#   rule_db_path: "data/trades.db"  # cross-bot learning
 
 # Trading settings
 trading:
@@ -15,83 +24,73 @@ trading:
     - "BTCUSD"
     - "ETHUSD"
     - "SOLUSD"
-    - "XRPUSD"
-    - "ADAUSD"
-    - "DOGEUSD"
     - "AVAXUSD"
-    - "DOTUSD"
     - "LINKUSD"
-    - "MATICUSD"
+    - "LTCUSD"
   leverage: 2
-  timeframe: "MINUTE_15"  # 15-minute candles
-  scan_interval: 60  # seconds between scans
+  timeframe: "HOUR"          # 1-hour candles
+  scan_interval: 300          # 5 min between scans
 
-# Risk profile: conservative, moderate, aggressive
+# Risk management
 risk:
-  profile: "moderate_aggressive"
+  stop_loss: 4.0              # fallback fixed SL %
+  take_profit: 7.0            # fallback fixed TP %
+  trailing_stop_trigger: 3.0
+  max_open_positions: 6
+  daily_loss_limit: 5.0       # kill switch: daily loss %
+  total_loss_limit: 30.0      # kill switch: total loss %
 
-  # Stop-loss and take-profit (in percent)
-  stop_loss: 4.0
-  take_profit: 7.0
-  trailing_stop_trigger: 3.0  # activate trailing stop at +3%
+  # ATR-based stop loss
+  atr_sl_multiplier: 2.0
+  atr_sl_min_pct: 3.0
+  atr_sl_max_pct: 8.0
 
-  # Position sizing
-  max_position_pct: 20  # max 20% of portfolio per trade
-  max_open_positions: 5
+  # Max hold time per category (hours)
+  max_hold_hours:
+    major: 24
+    altcoin: 8
+    memecoin: 4
 
-  # Kill switch
-  daily_loss_limit: 5.0    # stop trading if -5% in one day
-  total_loss_limit: 30.0   # stop all trading if portfolio drops 30%
+  # Capital allocation (% of total balance)
+  allocation:
+    max_total_exposure: 95
+    max_memecoin: 5
+    max_major: 40
+    max_altcoin: 30
+    min_position: 5
 
-# Risk profiles (presets)
-profiles:
-  conservative:
-    stop_loss: 2.0
-    take_profit: 4.0
-    trailing_stop_trigger: 2.0
-    max_position_pct: 15
-    max_open_positions: 3
+# Watchdog settings
+watchdog:
+  check_interval: 12
+  breakeven_trigger_pct: 1.5
+  progressive_sl_trigger_pct: 2.0
+  progressive_sl_trail_pct: 1.0
+  pullback_peak_trigger_pct: 1.5
+  pullback_close_pct: 0.75
+  trailing_trigger_pct: 2.5
+  trailing_atr_mult: 1.5
+  partial_profit_pct: 4.0
+  partial_close_ratio: 0.5
 
-  moderate:
-    stop_loss: 3.5
-    take_profit: 6.0
-    trailing_stop_trigger: 3.0
-    max_position_pct: 20
-    max_open_positions: 4
-
-  moderate_aggressive:
-    stop_loss: 4.0
-    take_profit: 7.0
-    trailing_stop_trigger: 3.0
-    max_position_pct: 20
-    max_open_positions: 5
-
-  aggressive:
-    stop_loss: 5.0
-    take_profit: 10.0
-    trailing_stop_trigger: 4.0
-    max_position_pct: 25
-    max_open_positions: 6
-
-# Signal engine settings
+# Signal engine
 signals:
   ema_fast: 9
   ema_slow: 21
   rsi_period: 14
   rsi_overbought: 70
   rsi_oversold: 30
-  volume_multiplier: 1.5  # volume must be 1.5x average
+  volume_multiplier: 1.5
+  atr_period: 14
+  range_period: 24            # 24 x 1H = 24 hours
+  buy_zone_pct: 20
+  sell_zone_pct: 80
+  min_range_pct: 3.0
 
 # Telegram notifications
 telegram:
   enabled: false
   bot_token: "your-telegram-bot-token"
   chat_id: "your-chat-id"
-
-# Logging
-logging:
-  level: "INFO"
-  file: "logs/cryptobot.log"
 
 # Database
 database:

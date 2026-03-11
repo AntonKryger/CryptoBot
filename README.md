@@ -7,54 +7,64 @@ Automatiseret crypto CFD trading-system paa Capital.com med tre bots:
 - **AI Bot** (AI-drevet, demo): Claude Haiku analyserer markedsdata, modtager regel-bottens signal som kontekst
 - **Demo Bot** (regelbaseret, demo): Identisk med Live Bot, til A/B test
 
-Begge regelbaserede bots bruger **trend-following som primaer strategi** (staerkest dokumenteret edge i crypto, Sharpe ~1.51 out-of-sample). Mean-reversion er sekundaer og kun aktiv i confirmed ranging markeder (ADX < 20).
-
 ## Status
 **Aktiv** — koerer 24/7 paa Hetzner VPS (91.98.26.70) via Docker.
 
 **Sidst opdateret:** 11-03-2026
 
+**Coins (6 stk):** BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD
+
 ---
 
-## Strategi — Evidensbaseret
+## Strategi — 6 Signal Modes
 
-### Hvorfor trend-following?
-Akademisk forskning viser at simpel trend-following er den bedst dokumenterede strategi i crypto:
-- 28-dages momentum med 5-dages holding: **Sharpe 1.51** vs 0.84 for buy-and-hold (SSRN, out-of-sample)
-- Grayscale Research: 50-dages SMA giver hoejere afkast OG lavere volatilitet end buy-and-hold
-- Mean-reversion paa 15-min timeframes har **ingen akademisk stoette** — kun daglige+ timeframes
+### Signal Engine (`src/strategy/signals.py`)
 
-### Hvad botten goer
-1. **1-times candles** (reducerer noise vs. 15-min, faerre handler, lavere spread-cost)
-2. **Trend-filter**: +1 score for trades der foelger EMA 9/21 trenden, -2 penalty for counter-trend
-3. **Mean-reversion kun i ranging regime** (ADX < 20): Buy near support, sell near resistance
-4. **Regime detection** (ADX 14): TRENDING_UP, TRENDING_DOWN, RANGING, NEUTRAL
-5. **Time-of-day bias**: Analyserer historiske timereturns over 7 dage
-6. **Scan hvert 5. minut** (300s interval, matcher 1H timeframe)
+| Mode | Trigger | Beskrivelse |
+|------|---------|-------------|
+| 1. Mean-reversion BUY | range_pos <= 20% | Koeb ved bund af 24h range, bounce + oversold |
+| 2. Mean-reversion SELL | range_pos >= 80% | Short ved top af range, rejection + overbought |
+| 3. Trend-following BUY | TRENDING_UP + range 20-75% | Koeb paa pullback i optrend |
+| 4. Trend-following SELL | TRENDING_DOWN + range 20-80% | Short paa rally i nedtrend |
+| 5. Momentum continuation | ROC-6 > 1% + EMA aligned | Trade staerkt momentum i neutral zone (25-75%) |
+| 6. Session trading | Bearish/bullish time-of-day bias | Proaktivt SHORT i historisk bearish timer |
 
-### Hvad vi har fravalgt (og hvorfor)
-- **StochRSI, VWAP Z-score, Keltner Channels** — Nul akademisk evidens paa crypto intraday
-- **Korrelationsfilter** — Crypto korrelation er 0.7-0.9 og STIGER under crashes (falsk tryghed)
-- **Flere indikatorer** — Jo flere parametre, jo stoerre risiko for overfitting
-- **ML/LSTM modeller** — Forskning viser simple modeller ofte outperformer komplekse paa crypto
+Alle modes kraever minimum score 4 for at trigge.
+
+### Scoring-faktorer
+- Range position, RSI, Bollinger Bands, bounce/rejection detection
+- EMA 9/21 trend alignment (+1 med trend, -2 mod trend)
+- MACD divergence (+2), volume climax (+2), failed breakout (+3)
+- Sentiment adjustment, regime adjustment, time-of-day bias (±2)
+
+### AI Analyst (`src/strategy/ai_analyst.py`)
+Claude Haiku analyserer markedsdata med **pattern recognition fokus**:
+- 12 timers candle-historie med streak detection (konsekutive groenne/roede)
+- 24h prisaendring og momentum-analyse
+- Session-baseret bias (aften = favoriser SHORT, morgen = favoriser BUY)
+- Modtager regel-bottens signal, sentiment, regime, og trade feedback
+- Confidence boost ved bot-enighed (+2 ved fuld, +1 ved delvis)
+
+**Hard filters i kode (efter AI response):**
+- Counter-trend blocker ved lav confidence (<8) + staerkt modmomentum
+- RSI ekstremfilter (>72 for BUY, <28 for SELL)
+- 3+ consecutive losses paa samme coin → kraev confidence >= 8
 
 ---
 
 ## Arkitektur
 
 ```
-                Capital.com API (demo)
-                /                    \
-           Bot A                    Bot AI
-        (main.py)               (main_ai.py)
-            |                        |
-      config.yaml             config_ai.yaml
-            |                        |
-     Demo-konto 1             Demo-konto 2
-    "Crypto bot"             "CryptoBot AI"
-            |                        |
-     Telegram Bot 1           Telegram Bot 2
- @claude_cryptobot_bot   @cryptobot_ai_anton_bot
+                Capital.com API
+                /          |          \
+           Live Bot     AI Bot      Demo Bot
+          (main.py)  (main_ai.py)  (main.py)
+              |          |              |
+        config.yaml  config_ai.yaml  config_demo.yaml
+              |          |              |
+        Live-konto   Demo-konto 2   Demo-konto 1
+              |          |              |
+        Telegram 1   Telegram 2    Telegram 1
 ```
 
 ### A/B Test Setup
@@ -64,10 +74,7 @@ Akademisk forskning viser at simpel trend-following er den bedst dokumenterede s
 | Entry-fil | `main.py` | `main_ai.py` |
 | Config | `config.yaml` | `config_ai.yaml` |
 | Beslutning | Score-system (min 4/9) | Claude Haiku (min 6/10) |
-| Konto | "Crypto bot" (default) | "CryptoBot AI" |
-| Watchdog | Fuld watchdog (9 regler, 12 sek.) | Fuld watchdog (9 regler, 12 sek.) |
-| Rapport | Nej | Ja (`/report BTCUSD`) |
-| AI Debug | Nej | Ja (`/debug`) |
+| Watchdog | 9 regler, 12 sek. | 9 regler, 12 sek. + scale-in |
 | Docker | `cryptobot` container | `cryptobot-ai` container |
 
 ---
@@ -80,176 +87,70 @@ CryptoBot/
 ├── main_ai.py                       # AI Bot: AI-drevet med cycle trading + scale-in
 ├── dashboard.py                     # Dashboard entry point (Flask, port 5000)
 ├── config.example.yaml              # Eksempel-konfiguration
-├── config.yaml                      # Live Bot config (ikke i git)
-├── config_ai.yaml                   # AI Bot config (ikke i git)
 ├── Dockerfile                       # Python 3.12 Docker image
 ├── docker-compose.yml               # Alle services (bots + dashboard)
 ├── requirements.txt                 # Python dependencies
 ├── scripts/
 │   ├── import_capital_csv.py        # Import enkelt Capital.com CSV
-│   └── clean_reimport.py            # Clean reimport af alle 3 CSVs
+│   ├── clean_reimport.py            # Clean reimport af alle 3 CSVs
+│   └── sync_vps.py                  # Auto-sync til VPS (windowless)
 ├── src/
 │   ├── api/
 │   │   └── capital_client.py        # Capital.com REST API klient
 │   ├── strategy/
-│   │   ├── signals.py               # Signal engine (trend-following + mean-reversion)
-│   │   ├── ai_analyst.py            # Claude AI analyse-modul + trade feedback
+│   │   ├── signals.py               # 6-mode signal engine
+│   │   ├── ai_analyst.py            # Claude AI analyse + pattern recognition
 │   │   ├── regime_detector.py       # ADX(14) regime detection
-│   │   ├── time_bias.py             # Time-of-day bias (historiske timereturns)
+│   │   ├── time_bias.py             # Time-of-day bias (7-dages historik)
 │   │   └── reddit_sentiment.py      # CryptoPanic + CoinGecko + Fear & Greed
 │   ├── risk/
-│   │   └── manager.py               # Risikostyring, ATR SL/TP, R:R enforcement
+│   │   └── manager.py               # ATR SL/TP, R:R enforcement, confidence sizing
 │   ├── executor/
-│   │   ├── trade_executor.py        # Handelsudfoersel, SQLite, trade feedback
+│   │   ├── trade_executor.py        # Handelsudfoersel, SQLite, reconcile
 │   │   └── position_watchdog.py     # 9-regel positionsovervagning (12 sek.)
 │   ├── dashboard/
 │   │   ├── app.py                   # Flask app factory (3 DB paths)
 │   │   ├── routes.py                # HTML pages + JSON API
 │   │   ├── stats_engine.py          # Statistik fra SQLite (pandas)
-│   │   ├── templates/
-│   │   │   ├── base.html            # Dark theme layout, nav, bot selector
-│   │   │   ├── overview.html        # Balance graf, KPI kort
-│   │   │   ├── trades.html          # Rapporter (Transaktioner/Trades sub-tabs)
-│   │   │   ├── stats.html           # Noegletal i kort
-│   │   │   ├── instruments.html     # Per-coin charts
-│   │   │   ├── calendar.html        # P/L heatmap
-│   │   │   └── compare.html         # Bot sammenligning
-│   │   └── static/
-│   │       ├── style.css            # Dark theme CSS
-│   │       └── dashboard.js         # Chart.js logic
+│   │   ├── templates/               # Jinja2 templates (dark theme)
+│   │   └── static/                  # CSS + Chart.js helpers
 │   ├── notifications/
 │   │   └── telegram_bot.py          # Telegram notifikationer og kommandoer
 │   └── analysis/
 │       └── reporter.py              # Data-analyse og rapportering
-├── data/
-│   └── trades.db                    # Live Bot handelshistorik
-├── data_ai/
-│   └── trades.db                    # AI Bot handelshistorik
-└── data_demo/
-    └── trades.db                    # Demo Bot handelshistorik
+├── data/                            # Live Bot SQLite DB
+├── data_ai/                         # AI Bot SQLite DB
+└── data_demo/                       # Demo Bot SQLite DB
 ```
-
----
-
-## Signal Engine (`src/strategy/signals.py`)
-
-Scorer hvert coin og trigger handel ved score >= 4/9.
-
-**Trend-filter (nyt):**
-- Trade med EMA 9/21 trend: +1 score
-- Trade mod trenden: -2 score (undtagen i RANGING regime)
-
-**BUY scoring (lignende for SELL):**
-1. Pris i buy zone (0-20% af 24h range) +1
-2. Trend-aligned (EMA bullish) +1 / counter-trend -2
-3. RSI < 30 (oversold) +2
-4. Pris under nedre Bollinger Band +2
-5. Bounce detection (engulfing, reversal) +1-2
-6. Near support +1
-7. Volume spike paa groen candle +1
-8. MACD bullish divergence +2
-9. Volume climax +2
-10. Regime adjustment +1/-2
-11. Time-of-day bias +1/-1
-
-**SELL-specifikke signaler:**
-- Failed breakout over range high: +3
-- Volume climax paa roed candle: +2
-- MACD bearish divergence: +2
-- Memecoin sell zone: 75% (stramere end 80% for majors)
-- Shorts blokeres medmindre regime er RANGING eller TRENDING_DOWN
-
----
-
-## AI Analyst (`src/strategy/ai_analyst.py`)
-
-Claude Haiku analyserer markedsdata og returnerer `{signal, confidence, reasoning}`.
-
-**Kerneprincip (opdateret):** Trade med trenden. Mean-reversion kun i ranging markeder.
-
-**Hvad AI'en modtager:**
-- Alle tekniske indikatorer (RSI, EMA, BB, VWAP, ATR, MACD histogram)
-- Seneste 6 candles med retning og stoerrelse
-- Market regime (ADX) og time-of-day bias
-- Sentiment (CryptoPanic, Fear & Greed, CoinGecko)
-- Regel-bottens signal og score
-- **Seneste 3 trades for denne coin** (feedback loop — laerer af fejl)
-
-**AI regler:**
-- Trending marked: kun trade i trend-retning
-- Ranging marked: mean-reversion ved ekstremer
-- Kraev altid confirmation candle (bounce, engulfing, volume)
-- Cost awareness: kun trade naar forventet profit > 2x spread
-- Shorts kraever 3+ tekniske bekraeftelser
-
-**Confidence boost ved bot-enighed:**
-- Regel-bot score >= 4 og samme signal: +2 confidence
-- Regel-bot score >= 2 og samme signal: +1 confidence
-
----
-
-## Regime Detection (`src/strategy/regime_detector.py`)
-
-ADX(14) beregnet fra 1-times candles via Capital.com API.
-
-| ADX | Regime | Strategi |
-|-----|--------|----------|
-| > 25 | TRENDING_UP / TRENDING_DOWN | Trade med trenden |
-| < 20 | RANGING | Mean-reversion |
-| 20-25 | NEUTRAL | Kun staerke signaler |
-
-Wilder's smoothing for +DM/-DM/TR. 15-min cache per coin.
-
----
-
-## Position Watchdog (`src/executor/position_watchdog.py`)
-
-Baggrundstraad der tjekker positioner hver 12. sekund. 7 regler:
-
-| # | Regel | Beskrivelse |
-|---|-------|-------------|
-| 1 | **Max holdtid** | Major: 24h, altcoin: 8h, memecoin: 4h. Lukker KUN tabere/breakeven — vindere haandteres af trailing stop |
-| 2 | **Early exit** | 3+ accelererende modsat-candles → luk 50%. 4+ → luk 100%. Grace period: 15 min (nye positioner faar tid) |
-| 3 | **Break-even** | Flyt SL til entry ved +1.5% profit (server-side paa Capital.com) |
-| 3b | **Progressive SL** | Efter break-even: SL trails 1.0% bag nuvaerende pris. Opdateres server-side paa Capital.com naar SL rykker >= 0.3%. Overvaager botten crasher |
-| 3c | **Profit pullback close** | Hvis peak P/L >= 1.5% OG pris falder 0.75% fra peak → LUK STRAKS. Den vigtigste profit-beskyttelse |
-| 4 | **Delvis profit** | Luk 50% ved +4% profit, resten koerer med trailing |
-| 5 | **Dynamisk TP** | Naar pris er inden for 1% af TP + positiv momentum: flyt TP op med 1.5x ATR (max 2 udvidelser) |
-| 6 | **Trailing stop** | Aktiv ved +2.5% profit. Lukker naar pris falder 1.5x ATR fra peak |
-| 7 | **Sentiment close** | Bearish time-of-day bias + profitable long → luk. Bullish bias + profitable short → luk. Baseret paa 7-dages historiske timereturns |
-| 8 | **Cycle trading** | Ved positionslukning: re-analyserer for modsat retning. Begge bots har cycle trading (AI: conf>=7, Rule: strength>=5). 30 min cooldown |
-
-**Scale-in** (hvert ~10 min): Hvis position er profitabel OG ny AI confidence >= entry confidence + 2, tilfoej 50% ekstra.
 
 ---
 
 ## Risikostyring (`src/risk/manager.py`)
 
-### ATR-baseret Stop Loss
-`stop_loss = entry_price * (1 ∓ atr_pct * 2.0)`, clamped til [3%, 8%]. Tilpasser sig automatisk til coin volatilitet (BTC ~1% vs DOGE ~3-5%).
-
-### ATR-baseret Take Profit (R:R enforced)
-`take_profit = entry_price * (1 +/- atr_pct * 3.0)`, clamped til [3%, 10%].
-**R:R enforcement**: TP afstand >= SL afstand x 1.5 (minimum 1.5:1 R:R ratio).
-Eksempel: BTC med 2% ATR → SL 4%, TP 6%. Hvis SL=5% → TP mindst 7.5%.
+### ATR-baseret Stop Loss / Take Profit
+- **SL**: `entry * (1 ∓ atr_pct * 2.0)`, clamped [3%, 8%]
+- **TP**: `entry * (1 ± atr_pct * 3.0)`, clamped [3%, 10%]
+- **R:R enforcement**: TP >= SL_distance × 1.5 (minimum 1.5:1)
 
 ### Confidence-baseret Position Sizing
-| Confidence | Multiplier | Betydning |
-|------------|-----------|-----------|
-| 6 | 25% | Decent setup |
-| 7 | 50% | Staerk setup |
-| 8 | 75% | Meget staerk |
+
+| Confidence | Multiplier | Beskrivelse |
+|------------|-----------|-------------|
+| 1-3 | 20% | Svagt signal |
+| 4-5 | 25-30% | Moderat signal |
+| 6 | 50% | Decent setup |
+| 7 | 70% | Staerk setup |
+| 8 | 85% | Meget staerk |
 | 9-10 | 100% | Exceptionel |
 
-Regel-bot score mapping: 4→6, 5→7, 6→8, 7+→9.
-
 ### Kapitalallokering
+
 | Kategori | Coins | Max pr. coin | Max total |
 |----------|-------|-------------|-----------|
-| Majors | BTC, ETH | 25% | — |
-| Altcoins | SOL, XRP, ADA, AVAX, DOT, LINK, MATIC | 15% | — |
-| Memecoins | DOGE, SHIBA, PEPE, FLOKI | 5% | — |
-| Total | — | — | 80% (100% ved conf >= 9) |
+| Majors | BTC, ETH | 40% | — |
+| Altcoins | SOL, AVAX, LINK, LTC | 30% | — |
+| Total | — | — | 95% |
+| Min position | — | 5% | — |
 
 ### Kill Switch
 - Dagligt tab > 5% → luk alt, stop handel
@@ -257,267 +158,186 @@ Regel-bot score mapping: 4→6, 5→7, 6→8, 7+→9.
 
 ---
 
+## Position Watchdog (`src/executor/position_watchdog.py`)
+
+Baggrundstraad der tjekker positioner hver 12 sekund:
+
+| # | Regel | Beskrivelse |
+|---|-------|-------------|
+| 1 | Max holdtid | Major: 24h, altcoin: 8h, memecoin: 4h. Kun tabere lukkes |
+| 2 | Early exit | 3+ accelererende adverse candles → luk 50-100% |
+| 3 | Break-even | Flyt SL til entry ved +1.5% |
+| 3b | Progressive SL | Trail 1.0% bag pris, server-side, min 0.3% step |
+| 3c | Profit pullback | Peak >= 1.5% + drop 0.75% fra peak → LUK |
+| 4 | Delvis profit | 50% ved +4% |
+| 5 | Dynamisk TP | Near TP + momentum → extend 1.5×ATR (max 2x) |
+| 6 | Trailing stop | +2.5% profit, luk ved 1.5×ATR drawdown |
+| 7 | Sentiment close | Bearish time-bias + profitable long → luk |
+| 8 | Cycle trading | Re-analyse for reversal efter close, 30min cooldown |
+
+---
+
+## Trade Tracking
+
+- `execute_trade()` henter rigtig dealId via `/api/v1/confirms/{dealRef}`
+- `reconcile_closed_trades()` bruger transaktionshistorik + epic+timestamp matching
+- Watchdog close methods sender `epic=epic` til DB for fallback matching
+- **Dashboard timestamps**: UTC fra VPS, konverteret til dansk tid (CET/CEST) i browser
+
+---
+
+## Dashboard
+
+Flask + Jinja2 + Chart.js dark theme dashboard paa port 5000.
+
+- **3 bot-profiler**: Live Bot, AI Bot, Demo Bot (selector i navbar)
+- **Sider**: Oversigt, Rapporter (Transaktioner/Trades), Statistik, Coins, Kalender, Sammenlign
+- **Tidszone**: Dansk tid (CET/CEST) — VPS gemmer UTC, browser konverterer
+
+---
+
+## Regime Detection (`src/strategy/regime_detector.py`)
+
+| ADX | Regime | Strategi |
+|-----|--------|----------|
+| > 25 | TRENDING_UP / TRENDING_DOWN | Trade med trenden |
+| < 20 | RANGING | Mean-reversion |
+| 20-25 | NEUTRAL | Kun staerke signaler |
+
+---
+
 ## Telegram Kommandoer
 
-**Begge bots:**
+**Begge bots:** `/status` `/trades` `/scan` `/close EPIC|ALL` `/stop` `/help`
 
-| Kommando | Funktion |
-|----------|----------|
-| `/status` | Balance, positioner, holdtider, watchdog-status |
-| `/trades` | Seneste 5 handler |
-| `/scan` | Scan alle coins (med regime + AI confidence) |
-| `/close EPIC` | Luk specifik position |
-| `/close ALL` | Luk alle positioner |
-| `/stop` | Stop botten |
-| `/help` | Vis kommandoer |
+**Kun Bot A:** `/buy EPIC SIZE` `/sell EPIC SIZE` `/sentiment`
 
-**Kun Bot A:** `/buy EPIC SIZE`, `/sell EPIC SIZE`, `/sentiment`
-
-**Kun Bot AI:** `/report EPIC` (detaljeret AI-analyse), `/debug` (ATR, regimer, holdtider, watchdog state)
+**Kun Bot AI:** `/report EPIC` `/debug`
 
 ---
 
 ## Konfiguration
 
-Config-filer er i `.gitignore`. Eksempel:
+Config-filer er i `.gitignore`. Se `config.example.yaml` for format.
 
+**Aktuel konfiguration (paa server):**
 ```yaml
-capital:
-  email: "..."
-  password: "..."
-  api_key: "..."
-  demo: true
-  base_url: "https://demo-api-capital.backend-capital.com"
-  account_name: "CryptoBot AI"  # kun config_ai.yaml
-
-ai:  # kun config_ai.yaml
-  anthropic_api_key: "sk-ant-..."
-  model: "claude-haiku-4-5-20251001"
-  max_tokens: 500
-  min_confidence: 6
-
 trading:
-  coins: [BTCUSD, ETHUSD, SOLUSD, XRPUSD, ADAUSD,
-          DOGEUSD, AVAXUSD, DOTUSD, LINKUSD, MATICUSD]
+  coins: [BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
   leverage: 2
-  timeframe: "HOUR"          # 1-times candles
-  scan_interval: 300          # 5 min mellem scans
+  timeframe: "HOUR"
+  scan_interval: 300
 
 risk:
-  profile: "moderate_aggressive"
-  stop_loss: 4.0
-  take_profit: 7.0
-  atr_sl_multiplier: 2.0     # ATR-baseret SL
-  atr_sl_min_pct: 3.0
-  atr_sl_max_pct: 8.0
-  max_hold_hours:
-    major: 24
-    altcoin: 8
-    memecoin: 4
+  max_open_positions: 6
   allocation:
-    max_total_exposure: 80
-    max_memecoin: 5
-    max_major: 25
-    max_altcoin: 15
-    min_position: 3
-
-watchdog:
-  check_interval: 12
-  breakeven_trigger_pct: 1.5
-  progressive_sl_trigger_pct: 2.0  # Start trailing SL server-side
-  progressive_sl_trail_pct: 1.0    # Trail 1% bag pris
-  pullback_peak_trigger_pct: 1.5   # Peak profit for pullback close
-  pullback_close_pct: 0.75         # Pullback fra peak der trigger close
-  trailing_trigger_pct: 2.5
-  trailing_atr_mult: 1.5
-  partial_profit_pct: 4.0
-  partial_close_ratio: 0.5
-
-signals:
-  range_period: 24            # 24 x 1H = 24 timer
-  buy_zone_pct: 20
-  sell_zone_pct: 80
-  min_range_pct: 3.0
+    max_total_exposure: 95
+    max_major: 40
+    max_altcoin: 30
+    min_position: 5
 ```
 
 ---
 
 ## Deployment
 
-### Hetzner VPS (produktion)
+### Hetzner VPS
 ```bash
 ssh -i ~/.ssh/id_ed25519 root@91.98.26.70
-cd /root/cryptobot
-git pull origin master
-docker compose down && docker compose up --build -d
-docker compose logs --tail=30
+cd /root/cryptobot && git pull origin master
+docker compose down && docker compose up -d --build
+docker compose logs --tail=30 cryptobot
+docker compose logs --tail=30 cryptobot-ai
 ```
 
-Config-filer opdateres paa serveren via Python yaml manipulation (da de er i .gitignore):
-```bash
-python3 -c "
-import yaml
-with open('config.yaml', 'r') as f: cfg = yaml.safe_load(f)
-cfg['trading']['timeframe'] = 'HOUR'
-with open('config.yaml', 'w') as f: yaml.dump(cfg, f)
-"
-```
+### Docker Compose Services
+- `cryptobot`: Live Bot (config.yaml, data/, logs/)
+- `cryptobot-ai`: AI Bot (config_ai.yaml, data_ai/, logs_ai/)
+- `cryptobot-demo`: Demo Bot (config_demo.yaml, data_demo/, logs_demo/)
+- `cryptobot-dashboard`: Flask dashboard (port 5000)
 
-### Lokal udvikling
-```bash
-git clone https://github.com/AntonKryger/CryptoBot.git
-cd CryptoBot
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp config.example.yaml config.yaml
-# Rediger config.yaml med API-noegler
-python main.py      # Bot A
-python main_ai.py   # Bot AI
-```
+---
 
-### Docker Compose
-Begge bots deler samme Docker image men koerer som separate containere med isoleret data og logs:
-- `cryptobot`: Bot A med `config.yaml`, `data/`, `logs/`
-- `cryptobot-ai`: Bot AI med `config_ai.yaml`, `data_ai/`, `logs_ai/`
+## API Gotchas
+- **`update_position()` SKAL sende baade SL og TP** — ellers cleares den manglende
+- **`dealReference` ≠ `dealId`** — brug `/api/v1/confirms/{dealRef}` for rigtig dealId
+- **Transaction history `size` felt = P/L i EUR** for 'Trade closed' entries
+- **CryptoPanic rate-limits aggressivt** — 429 errors ved samtidige kald fra begge bots
 
 ---
 
 ## Tech Stack
-- **Python 3.12** + pandas (rene beregninger, ingen pandas-ta)
-- **Capital.com REST API** (demo-server)
+- **Python 3.12** + pandas
+- **Capital.com REST API** (live + demo)
 - **Claude Haiku 4.5** (Anthropic SDK) for AI-analyse
 - **SQLite** for handelslog
-- **Telegram Bot API** for notifikationer og kommandoer
+- **Flask** + Jinja2 + Chart.js for dashboard
+- **Telegram Bot API** for notifikationer
 - **Docker Compose** paa Hetzner VPS
 
 ---
 
 ## Changelog
 
+### 11-03-2026: Aggressiv trading + pattern recognition + timezone fix
+
+**6 signal modes (ny):**
+- Mode 5: Momentum continuation — ROC-6 > 1% + EMA aligned → trade i neutral zone
+- Mode 6: Session trading — proaktiv SHORT i bearish timer, BUY i bullish timer
+- Trend-following zones bredere: BUY 20-75%, SELL 20-80%
+- Alle modes: min score 4 (trend sænket fra 5)
+
+**AI pattern recognition:**
+- 12h candle-historie (var 6 candles), streak detection, 24h prisaendring
+- Aggressivt prompt: deploy kapital, find patterns, SHORT aktivt
+- Hard filters lempet: counter-trend kun ved lav confidence, RSI 72/28, 3+ losses
+
+**Kapitaludnyttelse:**
+- Confidence multipliers haevet: conf 6=50%, 7=70%, 8=85%
+- Allokering: max_major=40%, max_altcoin=30%, max_total=95%
+- Foerste scan efter deploy: 4 trades, 95% kapitaludnyttelse
+
+**Dashboard timezone:**
+- Fikset: viser nu dansk tid (CET/CEST) i stedet for UTC
+
+### 11-03-2026: Trade tracking + AI filters + coin selection
+
+**Trade P/L tracking:**
+- dealId hentes via confirms endpoint (dealReference ≠ dealId)
+- reconcile bruger transaktionshistorik + epic+timestamp matching
+- Watchdog close methods sender epic til DB for fallback
+
+**AI hard filters:**
+- Counter-trend blocker, RSI overextension, recent loss penalty
+- Time-of-day BUY blocker i bearish timer (begge bots)
+
+**Coin selection:**
+- Reduceret fra 10 til 6 coins (BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD)
+- Banned: DOGEUSD, XRPUSD, ADAUSD, DOTUSD, MATICUSD
+
 ### 11-03-2026: R:R fix + Dashboard + AI feedback loop
 
-**Kritisk R:R bug fixed:**
-- SL afstand var ALTID stoerre end TP afstand (negativ forventet vaerdi paa hver trade)
-- ATR TP multiplier: 1.5 -> 3.0, clamp: [1.5%, 6%] -> [3%, 10%]
-- R:R enforcement: TP >= SL_distance x 1.5 (min 1.5:1 ratio)
-- Watchdog fixer R:R paa eksisterende positioner ved opstart (`fix_open_positions_rr()`)
-- **Capital.com API gotcha**: `update_position()` SKAL sende baade SL og TP, ellers cleares den manglende
+- ATR TP: 1.5x → 3.0x, clamp [3%, 10%], R:R enforcement min 1.5:1
+- Trading Dashboard med 3 bot-profiler
+- AI feedback loop med cross-bot laering
 
-**Trading Dashboard:**
-- Flask + Jinja2 + Chart.js dark theme dashboard
-- 3 bot-profiler: Live Bot, AI Bot, Demo Bot (selector i navbar)
-- Sider: Oversigt, Rapporter (sub-tabs: Transaktioner/Trades), Statistik, Coins, Kalender, Sammenlign
-- JSON API endpoints for alle data
-- CSV import scripts til Capital.com funds history
+### 09-03-2026: Grid trading + profit-beskyttelse
 
-**AI feedback loop:**
-- AI modtager nu seneste trades med P/L for laering
-- Cross-bot laering: AI ser regel-bottens bedste trades
-- **Aktivt trading-fokus**: AI straffes IKKE for tab, opfordres til at finde bedre setups
-- Direction balance: AI tracker BUY/SELL ratio og undgaar bias
-
-**Data import:**
-- Clean reimport af alle 3 bots fra Capital.com CSV eksporter
-- Live Bot: 23 trades (15W/8L), AI Bot: 62 trades (10W/51L), Demo Bot: 34 trades (12W/22L)
-- Ekskluderer manuelle trades og DEMO_TRANSFER poster
-
-### 09-03-2026: Grid trading optimering + profit-beskyttelse
-**Hovedproblem:** Botten tog ikke profit. Positioner toppede (ETH +€428, BTC +€216) men blev holdt
-mens prisen faldt. Account value gik fra €99.400 til €98.400 uden at botten reagerede.
-
-**Nye watchdog-regler:**
-- **Profit pullback close** (Rule 3c) — Hvis peak P/L >= 1.5% og pris falder 0.75% fra peak: LUK STRAKS.
-  Eksempel: ETH peak +3.2% → lukker ved +2.45% (i stedet for at ride ned til break-even)
-- **Progressive server-side SL** (Rule 3b) — SL trails 1.0% bag pris paa Capital.com server.
-  Opdateres kun naar SL rykker >= 0.3% (undgaar API-spam). Virker selv hvis bot crasher
-- **Sentiment-based close** (Rule 7) — Lukker profitable longs i bearish timer og shorts i bullish timer.
-  Baseret paa 7 dages historiske timereturns via TimeBias
-
-**Grid trading research (Pionex):**
-- Undersoegt Grid Trading Bot, DCA/Martingale, Reverse Grid, Rebalancing, Spot-Futures Arbitrage
-- Akademisk konklusion: grid trading uden trend-forudsigelse har forventet vaerdi = 0 minus fees
-- **Hvad vi stjal:** Realistisk TP (ATR-baseret), cycle trading, hurtig re-entry
-- **Hvad vi droppede:** Multi-position grids (CFD overnight fees draeber det), DCA/Martingale (eskalerende tab)
-
-**ATR-baseret Take Profit:**
-- TP aendret fra faste 7% til 1.5×ATR, clamped [1.5%, 6.0%]
-- BTC med 2% ATR → TP ved 3% (realistisk, rammes faktisk)
-- Grid trading insight: hyppige smaa profits slaar sjældne store
-
-**Cycle trading for begge bots:**
-- Rule-bot fik cycle trading (var kun paa AI-bot). Kraever signal strength >= 5
-- Efter watchdog lukker position → tjek for modsat signal → abn ny position
-- 10% af tilgaengelig kapital (konservativ), 30 min cooldown per coin
+- Profit pullback close, progressive SL, sentiment close
+- ATR-baseret TP, cycle trading for begge bots
+- Watchdog R:R fix ved opstart
 
 ### 09-03-2026: Evidensbaseret strategiskift
-**Aendringer:**
-- **Timeframe 15min → 1H** — Reducerer noise, faerre handler, lavere spread-drag
-- **Trend-following primaer strategi** — +1 score for trend-aligned, -2 for counter-trend
-- **Mean-reversion kun i RANGING regime** (ADX < 20)
-- **AI prompt omskrevet** — Trend-following regler, cost awareness, confirmation candle krav
-- **AI feedback loop** — Seneste 3 trades per coin vises i AI prompt (laerer af fejl)
-- **Scan interval 60s → 300s** — Matcher 1H timeframe
 
-**Bugfixes:**
-- Early exit grace period (15 min) — nye positioner fik ikke tid til at aande
-- Early exit P/L threshold -0.5% → -1% til -3% — var for aggressiv
-- LINKUSD stop-loss spam — break-even blev sat hvert 60s cycle (dedup fix)
-- SOL rapid re-open — watchdog lukkede → scan genaabnede straks (cooldown fix)
-
-**Research-baggrund:**
-- Simpel trend-following: Sharpe 1.51 out-of-sample (SSRN), bestaerkest af Grayscale Research
-- Mean-reversion paa 15-min: ingen akademisk stoette, kun daglige+ timeframes
-- StochRSI/VWAP Z-score/Keltner: nul peer-reviewed evidens paa crypto intraday
-- TA profitabilitet forsvinder typisk efter reelle spread/fee costs
-- Jo flere indikatorer/parametre, jo stoerre risiko for overfitting
-
-### 09-03-2026: 4-prioritets optimering
-**Prioritet 1 — Risk Management:**
-- ATR-baseret stop loss (2x ATR, clamped 3-8%)
-- Max holdtid per kategori (major 24h, altcoin 8h, memecoin 4h)
-- Trailing stop parametre: break-even +1.5%, trail +2.5% @ 1.5x ATR
-
-**Prioritet 2 — Confidence Sizing & Scale-In:**
-- Confidence multiplier: {6:0.25, 7:0.50, 8:0.75, 9:1.00}
-- Scale-in ved stigende conviction (ny conf >= entry + 2, +50% position)
-
-**Prioritet 3 — Dynamisk Exit:**
-- Early exit paa momentum acceleration (3+ accelererende adverse candles)
-- Dynamisk TP udvidelse (max 2x, 1.5 ATR per udvidelse)
-- Cycle trading: re-analyse for reversal ved positionslukning
-
-**Prioritet 4 — Market Regime & Short-side:**
-- ADX(14) regime detector (TRENDING/RANGING/NEUTRAL)
-- Time-of-day bias (historiske timereturns)
-- MACD divergence (+2), volume climax (+2), failed breakout (+3)
-- Memecoin sell zone strammet til 75%
-
-### 07-03-2026: Bugfixes
-- `/close ALL` bug (tjekkede for epic "ALL" foer ALL keyword)
-- `close_position` 400 error (manglende direction/size i body)
-- Kill switch 100% false trigger ved restart
-- Duplikat-positioner fra manuelle `/buy` kommandoer
-
-### 07-03-2026: Bot-samarbejde og watchdog
-- Bot-samarbejde: Regel-bot signal sendes til AI som kontekst
-- Position Watchdog: 12-sekunders overvagning
-- Smart kapitalallokering med kategorigraenser
-- To-pass scan-cyklus
+- Timeframe 15min → 1H, trend-following primaer
+- ADX regime detection, time-of-day bias
+- AI feedback loop, scan interval 300s
 
 ---
 
 ## Kendte Begraensninger
-- **Ingen backtesting** — Vigtigste manglende funktion. Uden out-of-sample test ved vi ikke om parameteraendringer hjaelper
-- **CFD spread-cost** — 0.1-0.5% per trade. Signaler skal forvente profit > 2x spread for at vaere profitable
-- **Crypto korrelation** — Alle coins er hoejt korrelerede (0.7-0.9). 10 positioner = reelt en stor crypto-bet
-- **Capital.com session timeout** — Sessions udloeber efter 10 min inaktivitet (auto-refresh haandterer det)
-- **Ingen WebSocket** — Bruger REST polling. Watchdog tjekker hvert 12 sek, ikke real-time
-
-## Fremtidige Forbedringer (prioriteret)
-1. **Backtesting framework** med walk-forward validering (vigtigst)
-2. **Half-Kelly position sizing** fra rolling trade statistik
-3. **BTC Dominance filter** for altcoin trades
-4. **Funding rate data** fra CoinGlass som score modifier
-5. **WebSocket streaming** for hurtigere prisdata
-6. **Telegram daily summary** (kl. 23:00 CET)
+- **Ingen backtesting** — Vigtigste manglende funktion
+- **CFD spread-cost** — 0.1-0.5% per trade
+- **Crypto korrelation** — Alle coins er hoejt korrelerede (0.7-0.9)
+- **CryptoPanic rate-limiting** — Begge bots rammer 429 errors
+- **Ingen WebSocket** — REST polling, watchdog hvert 12 sek
