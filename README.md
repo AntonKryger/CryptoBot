@@ -1,17 +1,18 @@
 # CryptoBot
 
 ## Beskrivelse
-Automatiseret crypto CFD trading-system paa Capital.com. To uafhaengige bots koerer parallelt paa hver sin demo-konto som A/B test:
+Automatiseret crypto CFD trading-system paa Capital.com med tre bots:
 
-- **Bot A** (regelbaseret): Teknisk analyse med scoring-system + trend-filter
-- **Bot AI** (AI-drevet): Claude Haiku analyserer markedsdata, modtager Bot A's signal som kontekst
+- **Live Bot** (regelbaseret, rigtige penge): Teknisk analyse med scoring-system + trend-filter
+- **AI Bot** (AI-drevet, demo): Claude Haiku analyserer markedsdata, modtager regel-bottens signal som kontekst
+- **Demo Bot** (regelbaseret, demo): Identisk med Live Bot, til A/B test
 
-Begge bots bruger **trend-following som primaer strategi** (staerkest dokumenteret edge i crypto, Sharpe ~1.51 out-of-sample). Mean-reversion er sekundaer og kun aktiv i confirmed ranging markeder (ADX < 20).
+Begge regelbaserede bots bruger **trend-following som primaer strategi** (staerkest dokumenteret edge i crypto, Sharpe ~1.51 out-of-sample). Mean-reversion er sekundaer og kun aktiv i confirmed ranging markeder (ADX < 20).
 
 ## Status
 **Aktiv** — koerer 24/7 paa Hetzner VPS (91.98.26.70) via Docker.
 
-**Sidst opdateret:** 09-03-2026
+**Sidst opdateret:** 11-03-2026
 
 ---
 
@@ -75,34 +76,57 @@ Akademisk forskning viser at simpel trend-following er den bedst dokumenterede s
 
 ```
 CryptoBot/
-├── main.py                          # Bot A: Regelbaseret trading bot
-├── main_ai.py                       # Bot AI: AI-drevet med cycle trading + scale-in
+├── main.py                          # Live Bot: Regelbaseret trading bot
+├── main_ai.py                       # AI Bot: AI-drevet med cycle trading + scale-in
+├── dashboard.py                     # Dashboard entry point (Flask, port 5000)
 ├── config.example.yaml              # Eksempel-konfiguration
-├── config.yaml                      # Bot A config (ikke i git)
-├── config_ai.yaml                   # Bot AI config (ikke i git)
+├── config.yaml                      # Live Bot config (ikke i git)
+├── config_ai.yaml                   # AI Bot config (ikke i git)
 ├── Dockerfile                       # Python 3.12 Docker image
-├── docker-compose.yml               # Begge bots som services
+├── docker-compose.yml               # Alle services (bots + dashboard)
 ├── requirements.txt                 # Python dependencies
+├── scripts/
+│   ├── import_capital_csv.py        # Import enkelt Capital.com CSV
+│   └── clean_reimport.py            # Clean reimport af alle 3 CSVs
 ├── src/
 │   ├── api/
 │   │   └── capital_client.py        # Capital.com REST API klient
 │   ├── strategy/
 │   │   ├── signals.py               # Signal engine (trend-following + mean-reversion)
-│   │   ├── ai_analyst.py            # Claude AI analyse-modul
+│   │   ├── ai_analyst.py            # Claude AI analyse-modul + trade feedback
 │   │   ├── regime_detector.py       # ADX(14) regime detection
 │   │   ├── time_bias.py             # Time-of-day bias (historiske timereturns)
 │   │   └── reddit_sentiment.py      # CryptoPanic + CoinGecko + Fear & Greed
 │   ├── risk/
-│   │   └── manager.py               # Risikostyring, ATR SL, confidence sizing
+│   │   └── manager.py               # Risikostyring, ATR SL/TP, R:R enforcement
 │   ├── executor/
-│   │   ├── trade_executor.py        # Handelsudfoersel og SQLite logging
-│   │   └── position_watchdog.py     # 7-regel positionsovervagning (12 sek.)
+│   │   ├── trade_executor.py        # Handelsudfoersel, SQLite, trade feedback
+│   │   └── position_watchdog.py     # 9-regel positionsovervagning (12 sek.)
+│   ├── dashboard/
+│   │   ├── app.py                   # Flask app factory (3 DB paths)
+│   │   ├── routes.py                # HTML pages + JSON API
+│   │   ├── stats_engine.py          # Statistik fra SQLite (pandas)
+│   │   ├── templates/
+│   │   │   ├── base.html            # Dark theme layout, nav, bot selector
+│   │   │   ├── overview.html        # Balance graf, KPI kort
+│   │   │   ├── trades.html          # Rapporter (Transaktioner/Trades sub-tabs)
+│   │   │   ├── stats.html           # Noegletal i kort
+│   │   │   ├── instruments.html     # Per-coin charts
+│   │   │   ├── calendar.html        # P/L heatmap
+│   │   │   └── compare.html         # Bot sammenligning
+│   │   └── static/
+│   │       ├── style.css            # Dark theme CSS
+│   │       └── dashboard.js         # Chart.js logic
 │   ├── notifications/
 │   │   └── telegram_bot.py          # Telegram notifikationer og kommandoer
 │   └── analysis/
 │       └── reporter.py              # Data-analyse og rapportering
-└── data/
-    └── trades.db                    # SQLite handelshistorik
+├── data/
+│   └── trades.db                    # Live Bot handelshistorik
+├── data_ai/
+│   └── trades.db                    # AI Bot handelshistorik
+└── data_demo/
+    └── trades.db                    # Demo Bot handelshistorik
 ```
 
 ---
@@ -204,10 +228,10 @@ Baggrundstraad der tjekker positioner hver 12. sekund. 7 regler:
 ### ATR-baseret Stop Loss
 `stop_loss = entry_price * (1 ∓ atr_pct * 2.0)`, clamped til [3%, 8%]. Tilpasser sig automatisk til coin volatilitet (BTC ~1% vs DOGE ~3-5%).
 
-### ATR-baseret Take Profit (grid-inspireret)
-`take_profit = entry_price * (1 ± atr_pct * 1.5)`, clamped til [1.5%, 6.0%].
-Stjålet fra grid trading: realistiske mål der faktisk rammes (3-4% typisk), i stedet for faste 7% der aldrig rammes.
-Eksempel: BTC med 2% ATR → TP ved 3%. ETH med 2.5% ATR → TP ved 3.75%.
+### ATR-baseret Take Profit (R:R enforced)
+`take_profit = entry_price * (1 +/- atr_pct * 3.0)`, clamped til [3%, 10%].
+**R:R enforcement**: TP afstand >= SL afstand x 1.5 (minimum 1.5:1 R:R ratio).
+Eksempel: BTC med 2% ATR → SL 4%, TP 6%. Hvis SL=5% → TP mindst 7.5%.
 
 ### Confidence-baseret Position Sizing
 | Confidence | Multiplier | Betydning |
@@ -371,6 +395,33 @@ Begge bots deler samme Docker image men koerer som separate containere med isole
 
 ## Changelog
 
+### 11-03-2026: R:R fix + Dashboard + AI feedback loop
+
+**Kritisk R:R bug fixed:**
+- SL afstand var ALTID stoerre end TP afstand (negativ forventet vaerdi paa hver trade)
+- ATR TP multiplier: 1.5 -> 3.0, clamp: [1.5%, 6%] -> [3%, 10%]
+- R:R enforcement: TP >= SL_distance x 1.5 (min 1.5:1 ratio)
+- Watchdog fixer R:R paa eksisterende positioner ved opstart (`fix_open_positions_rr()`)
+- **Capital.com API gotcha**: `update_position()` SKAL sende baade SL og TP, ellers cleares den manglende
+
+**Trading Dashboard:**
+- Flask + Jinja2 + Chart.js dark theme dashboard
+- 3 bot-profiler: Live Bot, AI Bot, Demo Bot (selector i navbar)
+- Sider: Oversigt, Rapporter (sub-tabs: Transaktioner/Trades), Statistik, Coins, Kalender, Sammenlign
+- JSON API endpoints for alle data
+- CSV import scripts til Capital.com funds history
+
+**AI feedback loop:**
+- AI modtager nu seneste trades med P/L for laering
+- Cross-bot laering: AI ser regel-bottens bedste trades
+- **Aktivt trading-fokus**: AI straffes IKKE for tab, opfordres til at finde bedre setups
+- Direction balance: AI tracker BUY/SELL ratio og undgaar bias
+
+**Data import:**
+- Clean reimport af alle 3 bots fra Capital.com CSV eksporter
+- Live Bot: 23 trades (15W/8L), AI Bot: 62 trades (10W/51L), Demo Bot: 34 trades (12W/22L)
+- Ekskluderer manuelle trades og DEMO_TRANSFER poster
+
 ### 09-03-2026: Grid trading optimering + profit-beskyttelse
 **Hovedproblem:** Botten tog ikke profit. Positioner toppede (ETH +€428, BTC +€216) men blev holdt
 mens prisen faldt. Account value gik fra €99.400 til €98.400 uden at botten reagerede.
@@ -465,8 +516,8 @@ mens prisen faldt. Account value gik fra €99.400 til €98.400 uden at botten 
 
 ## Fremtidige Forbedringer (prioriteret)
 1. **Backtesting framework** med walk-forward validering (vigtigst)
-2. **Performance metrics** (Sharpe, Sortino, expectancy, profit factor)
-3. **Half-Kelly position sizing** fra rolling trade statistik
-4. **BTC Dominance filter** for altcoin trades
-5. **Funding rate data** fra CoinGlass som score modifier
-6. **WebSocket streaming** for hurtigere prisdata
+2. **Half-Kelly position sizing** fra rolling trade statistik
+3. **BTC Dominance filter** for altcoin trades
+4. **Funding rate data** fra CoinGlass som score modifier
+5. **WebSocket streaming** for hurtigere prisdata
+6. **Telegram daily summary** (kl. 23:00 CET)

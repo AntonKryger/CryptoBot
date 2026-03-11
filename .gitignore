@@ -22,8 +22,10 @@ build/
 # Logs and data
 logs/*.log
 logs_ai/*.log
+logs_demo/*.log
 data/*.db
 data_ai/*.db
+data_demo/*.db
 
 # OS
 .DS_Store
