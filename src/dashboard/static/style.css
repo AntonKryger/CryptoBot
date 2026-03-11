@@ -372,6 +372,33 @@ tr:hover { background: rgba(255,255,255,0.03); }
     padding: 2rem;
 }
 
+/* Summary bar */
+.summary-bar {
+    display: flex;
+    gap: 1.5rem;
+    align-items: center;
+    padding: 0.7rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+/* Open trade row highlight */
+.row-open {
+    background: rgba(255, 165, 2, 0.05);
+}
+
+.row-open:hover {
+    background: rgba(255, 165, 2, 0.1) !important;
+}
+
+.tag-pending {
+    color: var(--orange);
+    font-style: italic;
+}
+
 /* Mobile */
 @media (max-width: 768px) {
     .container { padding: 1rem; }
