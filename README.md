@@ -10,9 +10,11 @@ Automatiseret crypto CFD trading-system paa Capital.com med tre bots:
 ## Status
 **Aktiv** — koerer 24/7 paa Hetzner VPS (91.98.26.70) via Docker.
 
-**Sidst opdateret:** 11-03-2026
+**Sidst opdateret:** 12-03-2026
 
 **Coins (6 stk):** BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD
+
+**KRITISK BUG:** P/L-vaerdier i dashboard stemmer IKKE overens med Capital.com. Se [Kendte Fejl](#kritisk-pl-data-integritetsproblem).
 
 ---
 
@@ -182,6 +184,7 @@ Baggrundstraad der tjekker positioner hver 12 sekund:
 - `execute_trade()` henter rigtig dealId via `/api/v1/confirms/{dealRef}`
 - `reconcile_closed_trades()` bruger transaktionshistorik + epic+timestamp matching
 - Watchdog close methods sender `epic=epic` til DB for fallback matching
+- Reconcile Step 2 re-checker trades lukket inden for 48h og overskriver estimeret P/L med faktisk
 - **Dashboard timestamps**: UTC fra VPS, konverteret til dansk tid (CET/CEST) i browser
 
 ---
@@ -192,6 +195,7 @@ Flask + Jinja2 + Chart.js dark theme dashboard paa port 5000.
 
 - **3 bot-profiler**: Live Bot, AI Bot, Demo Bot (selector i navbar)
 - **Sider**: Oversigt, Rapporter (Transaktioner/Trades), Statistik, Coins, Kalender, Sammenlign
+- **Sammenlign**: Periodefiltre (Dag/Uge/Maaned/Aar/Total), procentbaseret ROI, 6 grafer, 3 bot-kort
 - **Tidszone**: Dansk tid (CET/CEST) — VPS gemmer UTC, browser konverterer
 
 ---
@@ -279,13 +283,30 @@ docker compose logs --tail=30 cryptobot-ai
 
 ## Changelog
 
+### 12-03-2026: P/L reconcile fix + Compare page redesign
+
+**KRITISK P/L fix (delvis):**
+- Reconcile overskriver nu watchdog-estimeret P/L med faktisk Capital.com P/L (48h vindue)
+- Opdagede dybereliggende dataproblem: duplikerede trades i DB (se Kendte Fejl)
+
+**Compare page redesign:**
+- Periodefiltre: Dag, Uge, Maaned, Aar, Total
+- Procentbaseret ROI (fair sammenligning paa tvaers af konti med forskellige balancer)
+- 6 grafer: Kumulativ ROI%, Win Rate, Daglig P&L, Profit Factor, Coin ROI%, BUY/SELL
+- 3 bot-kort bevaret med alle stats
+- Ny `/api/compare?period=` endpoint med `get_period_comparison()`
+
+**Stats engine:**
+- Fikset ISO8601 timestamp parsing (mikrosekunder fra VPS)
+- Periodefiltreret statistik med start-balance lookup
+
 ### 11-03-2026: Aggressiv trading + pattern recognition + timezone fix
 
 **6 signal modes (ny):**
 - Mode 5: Momentum continuation — ROC-6 > 1% + EMA aligned → trade i neutral zone
 - Mode 6: Session trading — proaktiv SHORT i bearish timer, BUY i bullish timer
 - Trend-following zones bredere: BUY 20-75%, SELL 20-80%
-- Alle modes: min score 4 (trend sænket fra 5)
+- Alle modes: min score 4 (trend saenket fra 5)
 
 **AI pattern recognition:**
 - 12h candle-historie (var 6 candles), streak detection, 24h prisaendring
@@ -295,25 +316,15 @@ docker compose logs --tail=30 cryptobot-ai
 **Kapitaludnyttelse:**
 - Confidence multipliers haevet: conf 6=50%, 7=70%, 8=85%
 - Allokering: max_major=40%, max_altcoin=30%, max_total=95%
-- Foerste scan efter deploy: 4 trades, 95% kapitaludnyttelse
 
 **Dashboard timezone:**
 - Fikset: viser nu dansk tid (CET/CEST) i stedet for UTC
 
 ### 11-03-2026: Trade tracking + AI filters + coin selection
 
-**Trade P/L tracking:**
 - dealId hentes via confirms endpoint (dealReference ≠ dealId)
 - reconcile bruger transaktionshistorik + epic+timestamp matching
-- Watchdog close methods sender epic til DB for fallback
-
-**AI hard filters:**
-- Counter-trend blocker, RSI overextension, recent loss penalty
-- Time-of-day BUY blocker i bearish timer (begge bots)
-
-**Coin selection:**
-- Reduceret fra 10 til 6 coins (BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD)
-- Banned: DOGEUSD, XRPUSD, ADAUSD, DOTUSD, MATICUSD
+- Reduceret fra 10 til 6 coins, banned: DOGEUSD, XRPUSD, ADAUSD, DOTUSD, MATICUSD
 
 ### 11-03-2026: R:R fix + Dashboard + AI feedback loop
 
@@ -321,23 +332,83 @@ docker compose logs --tail=30 cryptobot-ai
 - Trading Dashboard med 3 bot-profiler
 - AI feedback loop med cross-bot laering
 
-### 09-03-2026: Grid trading + profit-beskyttelse
-
-- Profit pullback close, progressive SL, sentiment close
-- ATR-baseret TP, cycle trading for begge bots
-- Watchdog R:R fix ved opstart
-
 ### 09-03-2026: Evidensbaseret strategiskift
 
 - Timeframe 15min → 1H, trend-following primaer
 - ADX regime detection, time-of-day bias
-- AI feedback loop, scan interval 300s
+- Profit pullback close, progressive SL, sentiment close, cycle trading
+
+---
+
+## KRITISK: P/L Data-Integritetsproblem
+
+**Status:** ULOEST — Dashboard P/L-vaerdier stemmer IKKE overens med Capital.com.
+
+### Symptomer
+- Dashboard viser forkerte P/L-vaerdier for mange trades
+- Total P/L i dashboard ≠ Capital.com performance
+- Eksempler (Live Bot, 11-03-2026):
+  - BTCUSD 21:15: Capital.com +EUR 1.69, Dashboard +1.98 (afvigelse +0.29)
+  - SOLUSD 18:03: Capital.com +EUR 5.32, Dashboard +6.25 (afvigelse +0.93)
+  - ETHUSD 15:00: Capital.com +EUR 0.92, Dashboard +1.09 (afvigelse +0.17)
+
+### Grundaarsager (3 separate problemer)
+
+**Problem 1: Duplikerede trades i databasen**
+- CSV-import (`clean_reimport.py`) OG bot-tracking opretter BEGGE trades for samme handel
+- Samme Capital.com transaktion matcher til 2+ DB-rækker
+- Eksempel: SOLUSD id=109 (CSV, size=0.89, pl=5.32) + id=130 (bot, size=3.75, pl=6.25)
+- Resultat: P/L taelles dobbelt, trade-antal er oppustet
+
+**Problem 2: Watchdog estimerer P/L uden spread/fees**
+- Watchdog beregner: `pl_pct / 100 * entry_price * size`
+- Inkluderer IKKE: spread-cost, overnight funding, Capital.com fees
+- Estimat er altid for hoejt (0.1-1.0 EUR pr. trade)
+- Reconcile overskriver nu estimater (fix deployet 12-03-2026), men virker kun for trades < 48h
+
+**Problem 3: Reconcile matcher forkerte transaktioner**
+- `_match_close()` matcher paa epic + tidsstempel (foerste ledige efter entry)
+- Med duplikerede trades matches samme Capital.com transaktion til forkert DB-raekke
+- CSV-importerede trades har forkerte directions/sizes (size=0.0, entry=0.0)
+
+### Foreslaaede Loesninger
+
+**Loesning A: Nulstil databaser + stop CSV import (anbefalet)**
+1. Stop alle bots
+2. Slet trades-tabellen i alle 3 databaser (behold balance_snapshots)
+3. Importer KUN fra Capital.com transaction history API (ikke CSV)
+4. Tilfoej `source` kolonne til trades-tabellen (`bot`, `reconcile`, `csv`)
+5. Fjern `clean_reimport.py` fra workflow — brug kun API-data
+6. Genstart bots — fremtidige trades trackes korrekt fra bot + reconcile
+
+**Loesning B: Dedupliker eksisterende data**
+1. Identificer duplikerede trades (samme epic + exit_timestamp ± 1 sekund)
+2. Behold kun den med hoejeste id (nyeste = bot-skabt)
+3. Kør reconcile for at overskrive estimeret P/L med faktisk
+4. Validér total P/L mod Capital.com performance
+
+**Loesning C: Ny reconcile med dealId-matching (mest robust)**
+1. Tilfoej `capital_deal_id` kolonne til trades (fra confirms endpoint)
+2. Reconcile matcher paa dealId i stedet for epic+timestamp
+3. Forhindrer duplikater: hvis dealId allerede eksisterer, opdatér i stedet for insert
+4. Backfill alle eksisterende trades via transaction history
+
+**Loesning D: Hybrid (hurtigst at implementere)**
+1. Kør SQL deduplikering: slet CSV-importerede trades (size=0, entry_price=0)
+2. Kør reconcile for alle resterende trades (udvid 48h vindue til "all")
+3. Validér mod Capital.com
+4. Tilfoej guard i reconcile: spring trades over der allerede har korrekt dealId-match
+
+### Prioritet
+Loesning A er renest og forhindrer fremtidige problemer. Loesning D er hurtigst.
 
 ---
 
 ## Kendte Begraensninger
+- **P/L data-integritet** — Se ovenfor. Dashboard matcher IKKE Capital.com
 - **Ingen backtesting** — Vigtigste manglende funktion
-- **CFD spread-cost** — 0.1-0.5% per trade
+- **CFD spread-cost** — 0.1-0.5% per trade, ikke tracket
+- **Overnight funding** — Ikke tracket i bot DB (kun i Capital.com)
 - **Crypto korrelation** — Alle coins er hoejt korrelerede (0.7-0.9)
 - **CryptoPanic rate-limiting** — Begge bots rammer 429 errors
 - **Ingen WebSocket** — REST polling, watchdog hvert 12 sek

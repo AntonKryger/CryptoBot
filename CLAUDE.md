@@ -39,3 +39,13 @@ docker compose logs --tail=50 cryptobot-ai
 ## Coins
 Allowed: BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD
 Banned: DOGEUSD, XRPUSD, ADAUSD, DOTUSD, MATICUSD
+
+## CRITICAL BUG: P/L Data Integrity (2026-03-12)
+Dashboard P/L values DO NOT match Capital.com. Root causes:
+1. **Duplicate trades**: CSV import + bot tracking create 2 entries for the same trade
+2. **Estimated P/L**: Watchdog calculates P/L from price×size (ignoring spread/fees)
+3. **Reconcile mismatch**: Same Capital.com transaction matched to multiple DB rows
+
+**DO NOT run `clean_reimport.py`** — it creates duplicates.
+Before working on trade data, read the full analysis in README.md "KRITISK: P/L Data-Integritetsproblem".
+Proposed solutions: A) nuke+reimport from API only, B) deduplicate, C) dealId-matching reconcile, D) hybrid.
