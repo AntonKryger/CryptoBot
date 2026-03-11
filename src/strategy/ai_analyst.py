@@ -13,52 +13,57 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
+SYSTEM_PROMPT = """You are an aggressive crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
 
-YOUR PERFORMANCE PROBLEM: Your average loss (-161 EUR) is DOUBLE your average win (+81 EUR). Even at 50% win rate you LOSE money. You also have a massive long bias (87% BUY). You repeat the same losing trades on the same coins. THIS MUST CHANGE.
+YOUR GOAL: Deploy capital actively. The account has 6 coins and should typically have 3-5 positions open. Sitting in cash earns nothing. Find the BEST setups and TRADE them.
 
-CORE PRINCIPLE: Trade WITH the trend. Only enter when the expected reward justifies the risk.
+CORE PRINCIPLES:
+1. Trade WITH the trend — trend is your friend
+2. SHORT as readily as you BUY — crypto drops fast, shorts are profitable
+3. Use the full capital — having 90% in cash is a failure
+4. Spot PATTERNS — if a coin drops every evening, SHORT it in the evening
+
+PATTERN RECOGNITION (your edge):
+- Look at the last 6 candles: is there a clear direction? Trade it.
+- Evening/night sessions (UTC 18-06): crypto often sells off. Favor SELL positions.
+- Morning sessions (UTC 06-14): recovery rallies common. Favor BUY positions.
+- If ROC-6 > 1%: strong uptrend momentum, BUY on any dip
+- If ROC-6 < -1%: strong downtrend momentum, SELL on any bounce
+- Use time-of-day bias data: if the hour is historically bearish, SHORT.
 
 STRATEGY:
-- TRENDING market (EMA 9 > EMA 21 or vice versa): Trade in the trend direction ONLY.
-- RANGING market (ADX < 20): Mean-reversion at range extremes only.
-- CONFLICTING signals or NEUTRAL regime: HOLD. Sitting out IS a valid strategy.
+- TRENDING UP (EMA 9 > EMA 21): BUY. Even in the middle of the range.
+- TRENDING DOWN (EMA 9 < EMA 21): SELL. Even in the middle of the range.
+- RANGING (ADX < 20): Mean-reversion at extremes (range_pos < 25% = BUY, > 75% = SELL).
+- STRONG MOMENTUM (ROC-6 > 1.5% or < -1.5%): Trade the momentum direction regardless of range position.
 
-STRICT ENTRY RULES (violating ANY = HOLD):
-1. TREND ALIGNMENT: EMA 9 > EMA 21 for BUY, EMA 9 < EMA 21 for SELL. NO counter-trend trades.
-2. MOMENTUM CONFIRMATION: ROC (3-candle) must align with trade direction. Negative ROC = no BUY. Positive ROC = no SELL.
-3. CONFIRMATION CANDLE: Require bullish engulfing/bounce for BUY, bearish engulfing/rejection for SELL. No entry on indicators alone.
-4. RSI FILTER: Do NOT buy if RSI > 65 (already extended). Do NOT sell if RSI < 35.
-5. VOLUME: Prefer entries with volume spike or above-average volume ratio.
-6. RECENT LOSS FILTER: If you lost on this exact coin in the last 3 trades, require confidence >= 8 to re-enter.
+ENTRY RULES:
+1. TREND: EMA 9 > EMA 21 for BUY, < for SELL. Counter-trend only in RANGING regime at extremes.
+2. MOMENTUM: ROC-3 should align. But if ROC-6 is strong (>1%), allow entry even with slight ROC-3 retracement.
+3. RSI: Don't buy if RSI > 70. Don't sell if RSI < 30. Otherwise it's fine.
+4. VOLUME: Above-average volume confirms the move. Not required for trend entries.
 
-POSITION SIZING BY CONFIDENCE:
-- Confidence 6-7: SMALL position (minimum sizing). These are speculative.
-- Confidence 8: MEDIUM position. Strong setup with multiple confirmations.
-- Confidence 9-10: FULL position. Exceptional setup, trend + momentum + confirmation all aligned.
-- NEVER give confidence 8+ unless ALL 5 entry rules above are met.
+CONFIDENCE SCORING (be generous with good setups):
+- 6: Marginal setup, only 2-3 confirmations. Will get small position.
+- 7: Decent setup, trend + momentum aligned. Gets moderate position.
+- 8: Strong setup, 4+ confirmations. Gets large position.
+- 9-10: Exceptional — everything aligned, strong momentum, historical pattern confirms. Gets full position.
+- If trend + momentum + session bias all align: give at least 8.
 
-DIRECTION BALANCE — CRITICAL:
-- You are 87% long. In bearish trends (EMA 9 < EMA 21), you MUST recommend SELL or HOLD. NEVER BUY.
-- Falling prices with negative momentum = SELL opportunity, not a "dip to buy."
-- If both ROC-3 and ROC-6 are negative, a BUY signal requires exceptional justification (confidence 9+).
-
-LOSS PREVENTION:
-- If your trade feedback shows net negative P/L on a coin, raise the bar. Require MORE confirmations.
-- Your biggest losses come from buying into downtrends. Check EMA trend FIRST before anything else.
-- A trade with 3% SL and 4.5% TP only works if your entry timing is precise. Wait for the confirmation candle.
-
-R:R DISCIPLINE:
-- Minimum R:R is 1.5:1. Your TP must be at least 1.5x your SL distance.
-- If the nearest resistance/support doesn't allow 1.5:1 R:R, HOLD.
+DIRECTION BALANCE:
+- Check your stats: if you're >70% long, actively look for SHORT setups.
+- Falling prices with negative ROC = SHORT opportunity, NOT a "dip to buy."
+- Evening hours with bearish bias = prime SHORT territory.
 
 WHEN TO HOLD:
-- No clear trend (ADX 15-25, flat EMAs)
-- Conflicting indicators (e.g., bullish EMA but bearish momentum)
-- Price in the middle of range (30-70% position) with no confirmation candle
-- You've already lost on this coin recently and setup isn't exceptional
+- Truly conflicting signals (bullish EMA but strong bearish momentum)
+- No clear trend AND no range extreme AND no momentum
+- ADX 15-20 with flat EMAs (choppy market)
 
-Sentiment is SUPPLEMENTARY only. Never trade on sentiment alone.
+DO NOT hold when:
+- There's a clear trend direction (even if moderate confidence)
+- Momentum is strong in one direction
+- Time-of-day bias strongly favors one direction
 
 Respond ONLY with valid JSON:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -172,41 +177,42 @@ class AIAnalyst:
                 logger.info(f"AI {epic}: {signal} rejected (confidence {confidence} < {self.min_confidence})")
                 return "HOLD", details
 
-            # HARD FILTER 1: Counter-trend blocker
+            # HARD FILTER 1: Counter-trend blocker (only block low confidence counter-trend)
             if signal in ("BUY", "SELL"):
                 ema_fast = latest.get("ema_9", latest.get("close"))
                 ema_slow = latest.get("ema_21", latest.get("close"))
                 roc_3 = latest.get("roc_3", 0)
                 rsi = latest.get("rsi", 50)
 
-                if signal == "BUY" and ema_fast < ema_slow and roc_3 < 0:
-                    details["reason"] = f"BLOCKED: BUY against bearish trend (EMA9<EMA21, ROC={roc_3:+.2f}%)"
-                    logger.warning(f"AI {epic}: BUY BLOCKED - counter-trend (EMA bearish + negative momentum)")
+                # Only block counter-trend at low confidence (allow high-confidence counter-trend)
+                if signal == "BUY" and ema_fast < ema_slow and roc_3 < -0.5 and confidence < 8:
+                    details["reason"] = f"BLOCKED: Low-conf BUY against bearish trend (EMA9<EMA21, ROC={roc_3:+.2f}%)"
+                    logger.warning(f"AI {epic}: BUY BLOCKED - counter-trend + low confidence ({confidence})")
                     return "HOLD", details
 
-                if signal == "SELL" and ema_fast > ema_slow and roc_3 > 0:
-                    details["reason"] = f"BLOCKED: SELL against bullish trend (EMA9>EMA21, ROC={roc_3:+.2f}%)"
-                    logger.warning(f"AI {epic}: SELL BLOCKED - counter-trend (EMA bullish + positive momentum)")
+                if signal == "SELL" and ema_fast > ema_slow and roc_3 > 0.5 and confidence < 8:
+                    details["reason"] = f"BLOCKED: Low-conf SELL against bullish trend (EMA9>EMA21, ROC={roc_3:+.2f}%)"
+                    logger.warning(f"AI {epic}: SELL BLOCKED - counter-trend + low confidence ({confidence})")
                     return "HOLD", details
 
-                # HARD FILTER 2: RSI overextension
-                if signal == "BUY" and rsi > 65:
-                    details["reason"] = f"BLOCKED: BUY with RSI={rsi:.0f} (overextended, >65)"
+                # HARD FILTER 2: RSI extreme overextension (widened thresholds)
+                if signal == "BUY" and rsi > 72:
+                    details["reason"] = f"BLOCKED: BUY with RSI={rsi:.0f} (overextended, >72)"
                     logger.warning(f"AI {epic}: BUY BLOCKED - RSI overextended ({rsi:.0f})")
                     return "HOLD", details
 
-                if signal == "SELL" and rsi < 35:
-                    details["reason"] = f"BLOCKED: SELL with RSI={rsi:.0f} (oversold, <35)"
+                if signal == "SELL" and rsi < 28:
+                    details["reason"] = f"BLOCKED: SELL with RSI={rsi:.0f} (oversold, <28)"
                     logger.warning(f"AI {epic}: SELL BLOCKED - RSI oversold ({rsi:.0f})")
                     return "HOLD", details
 
-            # HARD FILTER 3: Recent loss penalty — require higher confidence after losses
+            # HARD FILTER 3: Recent loss penalty — only block after 3+ consecutive losses
             if signal in ("BUY", "SELL") and self.trade_executor:
                 try:
                     recent = self.trade_executor.get_trade_feedback(epic=epic, limit=3)
                     recent_losses = sum(1 for t in recent if (t.get("profit_loss") or 0) < 0)
-                    if recent_losses >= 2 and confidence < 8:
-                        details["reason"] = f"BLOCKED: {recent_losses} recent losses on {epic}, need conf>=8 (got {confidence})"
+                    if recent_losses >= 3 and confidence < 8:
+                        details["reason"] = f"BLOCKED: {recent_losses} consecutive losses on {epic}, need conf>=8 (got {confidence})"
                         logger.warning(f"AI {epic}: {signal} BLOCKED - {recent_losses} recent losses, confidence {confidence} < 8")
                         return "HOLD", details
                 except Exception:
@@ -242,16 +248,43 @@ class AIAnalyst:
         """Build the analysis prompt with all market data."""
         latest = df.iloc[-1]
 
-        # Recent candles summary (last 6 = 1.5 hours)
-        recent = df.tail(6)
+        # Recent candles summary (last 12 = 12 hours on 1H)
+        recent = df.tail(12)
         candles_text = ""
+        green_count = 0
+        red_count = 0
         for i, (idx, row) in enumerate(recent.iterrows()):
             direction = "GREEN" if row["close"] > row["open"] else "RED"
+            if direction == "GREEN":
+                green_count += 1
+            else:
+                red_count += 1
             change_pct = (row["close"] - row["open"]) / row["open"] * 100
             candles_text += (
                 f"  {idx}: {direction} O={row['open']:.4f} H={row['high']:.4f} "
                 f"L={row['low']:.4f} C={row['close']:.4f} ({change_pct:+.2f}%)\n"
             )
+
+        # Calculate sustained trend (consecutive candles in same direction)
+        last_candles = df.tail(8)
+        consecutive_green = 0
+        consecutive_red = 0
+        for _, row in last_candles.iloc[::-1].iterrows():
+            if row["close"] > row["open"]:
+                if consecutive_red > 0:
+                    break
+                consecutive_green += 1
+            else:
+                if consecutive_green > 0:
+                    break
+                consecutive_red += 1
+
+        # 24h price change
+        if len(df) >= 24:
+            price_24h_ago = df.iloc[-24]["close"]
+            change_24h = (latest["close"] - price_24h_ago) / price_24h_ago * 100
+        else:
+            change_24h = 0
 
         # Technical indicators
         range_pos = latest.get("range_position", 50)
@@ -271,12 +304,28 @@ class AIAnalyst:
         macd_hist = latest.get("macd_histogram", 0)
         volume_ratio = latest.get("volume_ratio", 1.0)
 
+        # Trend pattern summary
+        if consecutive_green >= 3:
+            trend_pattern = f"BULLISH STREAK: {consecutive_green} consecutive green candles"
+        elif consecutive_red >= 3:
+            trend_pattern = f"BEARISH STREAK: {consecutive_red} consecutive red candles"
+        elif green_count >= 8:
+            trend_pattern = f"STRONGLY BULLISH: {green_count}/{len(recent)} green candles in last 12h"
+        elif red_count >= 8:
+            trend_pattern = f"STRONGLY BEARISH: {red_count}/{len(recent)} red candles in last 12h"
+        else:
+            trend_pattern = f"MIXED: {green_count} green / {red_count} red in last 12h"
+
         prompt = f"""Analyze {epic} for a potential trade:
 
 PRICE: {latest['close']:.4f}
+24h CHANGE: {change_24h:+.2f}%
 24h RANGE: {latest.get('range_low', 0):.4f} - {latest.get('range_high', 0):.4f}
 RANGE SIZE: {range_pct:.1f}%
 POSITION IN RANGE: {range_pos:.0f}% (0%=bottom, 100%=top)
+
+PATTERN: {trend_pattern}
+{f'Consecutive streak: {consecutive_green} green candles — momentum building' if consecutive_green >= 3 else f'Consecutive streak: {consecutive_red} red candles — selling pressure' if consecutive_red >= 3 else ''}
 
 TECHNICAL INDICATORS:
 - RSI(14): {rsi:.1f}
@@ -294,7 +343,7 @@ TECHNICAL INDICATORS:
 SUPPORT: {latest.get('support', 'N/A')}
 RESISTANCE: {latest.get('resistance', 'N/A')}
 
-RECENT CANDLES (15min each, newest last):
+RECENT CANDLES (last 12 hours, newest last):
 {candles_text}"""
 
         # Add regime data

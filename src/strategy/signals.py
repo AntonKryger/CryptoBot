@@ -25,11 +25,11 @@ class SignalEngine:
         self.sell_zone_pct = signals_cfg.get("sell_zone_pct", 80)  # top 80%+ of range
         self.min_range_pct = signals_cfg.get("min_range_pct", 3.0)  # min range to trade
 
-        # Trend-following pullback zone
-        self.trend_pullback_buy_max = signals_cfg.get("trend_pullback_buy_max", 65)
-        self.trend_pullback_buy_min = signals_cfg.get("trend_pullback_buy_min", 25)
-        self.trend_pullback_sell_max = signals_cfg.get("trend_pullback_sell_max", 75)
-        self.trend_pullback_sell_min = signals_cfg.get("trend_pullback_sell_min", 35)
+        # Trend-following pullback zone (widened for more trades)
+        self.trend_pullback_buy_max = signals_cfg.get("trend_pullback_buy_max", 75)
+        self.trend_pullback_buy_min = signals_cfg.get("trend_pullback_buy_min", 20)
+        self.trend_pullback_sell_max = signals_cfg.get("trend_pullback_sell_max", 80)
+        self.trend_pullback_sell_min = signals_cfg.get("trend_pullback_sell_min", 20)
 
         # Reddit sentiment
         from src.strategy.reddit_sentiment import RedditSentiment
@@ -432,6 +432,26 @@ class SignalEngine:
             if signal:
                 return signal, result_details
 
+        # ================================================================
+        # MODE 5: MOMENTUM CONTINUATION — Strong directional momentum
+        # Trade in the "neutral zone" when momentum is overwhelming
+        # ================================================================
+        signal, result_details = self._evaluate_momentum_continuation(
+            df, latest, range_pos, ema_trend_bullish, ctx, epic, details
+        )
+        if signal:
+            return signal, result_details
+
+        # ================================================================
+        # MODE 6: SESSION TRADING — Proactive trades based on time-of-day bias
+        # SHORT in historically bearish hours when momentum confirms
+        # ================================================================
+        signal, result_details = self._evaluate_session_trade(
+            df, latest, range_pos, ema_trend_bullish, ctx, epic, details
+        )
+        if signal:
+            return signal, result_details
+
         # -- HOLD: No signal triggered --
         details["reason"] = (
             f"Neutral zone (range pos: {range_pos:.0f}%, "
@@ -688,8 +708,8 @@ class SignalEngine:
         details["trend_buy_score"] = score
         details["trend_buy_reasons"] = reasons
 
-        # Need minimum score of 5 (higher bar since we're not at extremes)
-        if score >= 5:
+        # Need minimum score of 4 (same as mean-reversion)
+        if score >= 4:
             details["signal_strength"] = score
             details["reasons"] = reasons
             details["signal_type"] = "TREND_BUY"
@@ -783,12 +803,212 @@ class SignalEngine:
         details["trend_sell_score"] = score
         details["trend_sell_reasons"] = reasons
 
-        # Need minimum score of 5
-        if score >= 5:
+        # Need minimum score of 4 (same as mean-reversion)
+        if score >= 4:
             details["signal_strength"] = score
             details["reasons"] = reasons
             details["signal_type"] = "TREND_SELL"
             logger.info(f"TREND SELL signal (score={score}, range_pos={range_pos:.0f}%, ADX={adx:.0f}): {reasons}")
             return "SELL", details
+
+        return None, details
+
+    # ================================================================
+    # MOMENTUM CONTINUATION — Strong directional move in neutral zone
+    # When ROC-6 is strongly directional + EMA aligns + candle confirms
+    # ================================================================
+    def _evaluate_momentum_continuation(self, df, latest, range_pos, ema_trend_bullish, ctx, epic, details):
+        """Trade strong momentum even when price is in the middle of the range."""
+        roc_3 = latest.get("roc_3", 0)
+        roc_6 = latest.get("roc_6", 0)
+        rsi = latest.get("rsi", 50)
+        macd_hist = latest.get("macd_histogram", 0)
+        prev = df.iloc[-2]
+
+        # BUY: Strong upward momentum
+        if roc_6 > 1.0 and roc_3 > 0.3 and ema_trend_bullish and 25 <= range_pos <= 75:
+            score = 0
+            reasons = []
+
+            score += 2
+            reasons.append(f"Strong momentum (ROC6={roc_6:+.2f}%, ROC3={roc_3:+.2f}%)")
+
+            score += 1
+            reasons.append("EMA trend aligned (bullish)")
+
+            if latest["bullish_candle"]:
+                score += 1
+                reasons.append("Current candle green")
+
+            if macd_hist > 0 and macd_hist > prev.get("macd_histogram", 0):
+                score += 1
+                reasons.append("MACD histogram rising")
+
+            if latest.get("volume_spike") or latest.get("volume_ratio", 1) > 1.3:
+                score += 1
+                reasons.append(f"Volume above average ({latest.get('volume_ratio', 1):.1f}x)")
+
+            if rsi < 65:  # Not overextended
+                score += 1
+                reasons.append(f"RSI has room ({rsi:.0f})")
+
+            # Sentiment/time adjustments
+            score, reasons = self._apply_common_adjustments(score, reasons, df, epic, "BUY", ctx)
+
+            details["momentum_buy_score"] = score
+            details["momentum_buy_reasons"] = reasons
+
+            if score >= 5:
+                details["signal_strength"] = score
+                details["reasons"] = reasons
+                details["signal_type"] = "MOMENTUM_BUY"
+                logger.info(f"MOMENTUM BUY signal (score={score}, range_pos={range_pos:.0f}%): {reasons}")
+                return "BUY", details
+
+        # SELL: Strong downward momentum
+        if roc_6 < -1.0 and roc_3 < -0.3 and not ema_trend_bullish and 25 <= range_pos <= 75:
+            score = 0
+            reasons = []
+
+            score += 2
+            reasons.append(f"Strong bearish momentum (ROC6={roc_6:+.2f}%, ROC3={roc_3:+.2f}%)")
+
+            score += 1
+            reasons.append("EMA trend aligned (bearish)")
+
+            if latest["bearish_candle"]:
+                score += 1
+                reasons.append("Current candle red")
+
+            if macd_hist < 0 and macd_hist < prev.get("macd_histogram", 0):
+                score += 1
+                reasons.append("MACD histogram falling")
+
+            if latest.get("volume_spike") or latest.get("volume_ratio", 1) > 1.3:
+                score += 1
+                reasons.append(f"Volume above average ({latest.get('volume_ratio', 1):.1f}x)")
+
+            if rsi > 35:  # Not oversold
+                score += 1
+                reasons.append(f"RSI has room to fall ({rsi:.0f})")
+
+            score, reasons = self._apply_common_adjustments(score, reasons, df, epic, "SELL", ctx)
+
+            details["momentum_sell_score"] = score
+            details["momentum_sell_reasons"] = reasons
+
+            if score >= 5:
+                details["signal_strength"] = score
+                details["reasons"] = reasons
+                details["signal_type"] = "MOMENTUM_SELL"
+                logger.info(f"MOMENTUM SELL signal (score={score}, range_pos={range_pos:.0f}%): {reasons}")
+                return "SELL", details
+
+        return None, details
+
+    # ================================================================
+    # SESSION TRADING — Proactive trades based on time-of-day patterns
+    # If a coin historically drops/rises at this hour AND momentum confirms
+    # ================================================================
+    def _evaluate_session_trade(self, df, latest, range_pos, ema_trend_bullish, ctx, epic, details):
+        """Proactive trading in historically biased hours when technicals confirm."""
+        if not self.time_bias or not epic:
+            return None, details
+
+        time_bias_label = ctx.get("time_bias_label")
+        time_bias_return = ctx.get("time_bias_return", 0)
+        roc_3 = latest.get("roc_3", 0)
+        rsi = latest.get("rsi", 50)
+
+        # SESSION SHORT: Bearish hour + bearish momentum + not oversold
+        if (time_bias_label == "BEARISH" and time_bias_return < -0.08
+                and roc_3 < 0 and not ema_trend_bullish and 30 <= range_pos <= 85
+                and rsi > 40):
+            score = 0
+            reasons = []
+
+            # Strong bearish hour bonus
+            if time_bias_return < -0.15:
+                score += 3
+                reasons.append(f"Strong bearish hour (avg {time_bias_return:+.3f}%)")
+            else:
+                score += 2
+                reasons.append(f"Bearish hour (avg {time_bias_return:+.3f}%)")
+
+            if not ema_trend_bullish:
+                score += 1
+                reasons.append("EMA bearish")
+
+            if roc_3 < -0.3:
+                score += 1
+                reasons.append(f"Momentum confirming ({roc_3:+.2f}%)")
+
+            if latest["bearish_candle"]:
+                score += 1
+                reasons.append("Current candle red")
+
+            if latest.get("macd_histogram", 0) < 0:
+                score += 1
+                reasons.append("MACD bearish")
+
+            bounce = self._detect_bounce(df, "SELL")
+            if bounce >= 1:
+                score += 1
+                reasons.append(f"Rejection pattern (score={bounce})")
+
+            details["session_sell_score"] = score
+            details["session_sell_reasons"] = reasons
+
+            if score >= 5:
+                details["signal_strength"] = score
+                details["reasons"] = reasons
+                details["signal_type"] = "SESSION_SELL"
+                logger.info(f"SESSION SELL signal (score={score}, hour_avg={time_bias_return:+.3f}%): {reasons}")
+                return "SELL", details
+
+        # SESSION LONG: Bullish hour + bullish momentum + not overbought
+        if (time_bias_label == "BULLISH" and time_bias_return > 0.08
+                and roc_3 > 0 and ema_trend_bullish and 15 <= range_pos <= 70
+                and rsi < 65):
+            score = 0
+            reasons = []
+
+            if time_bias_return > 0.15:
+                score += 3
+                reasons.append(f"Strong bullish hour (avg {time_bias_return:+.3f}%)")
+            else:
+                score += 2
+                reasons.append(f"Bullish hour (avg {time_bias_return:+.3f}%)")
+
+            if ema_trend_bullish:
+                score += 1
+                reasons.append("EMA bullish")
+
+            if roc_3 > 0.3:
+                score += 1
+                reasons.append(f"Momentum confirming ({roc_3:+.2f}%)")
+
+            if latest["bullish_candle"]:
+                score += 1
+                reasons.append("Current candle green")
+
+            if latest.get("macd_histogram", 0) > 0:
+                score += 1
+                reasons.append("MACD bullish")
+
+            bounce = self._detect_bounce(df, "BUY")
+            if bounce >= 1:
+                score += 1
+                reasons.append(f"Bounce pattern (score={bounce})")
+
+            details["session_buy_score"] = score
+            details["session_buy_reasons"] = reasons
+
+            if score >= 5:
+                details["signal_strength"] = score
+                details["reasons"] = reasons
+                details["signal_type"] = "SESSION_BUY"
+                logger.info(f"SESSION BUY signal (score={score}, hour_avg={time_bias_return:+.3f}%): {reasons}")
+                return "BUY", details
 
         return None, details

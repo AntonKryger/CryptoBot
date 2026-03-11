@@ -12,8 +12,8 @@ MAJORS = {"BTCUSD", "ETHUSD"}
 # Confidence multiplier lookup (confidence score -> sizing multiplier)
 # Hard filters in AI/signals already gate entry quality, so sizing is less conservative
 CONFIDENCE_MULTIPLIER = {
-    1: 0.15, 2: 0.15, 3: 0.15, 4: 0.15, 5: 0.15,
-    6: 0.30, 7: 0.50, 8: 0.75, 9: 1.00, 10: 1.00,
+    1: 0.20, 2: 0.20, 3: 0.20, 4: 0.25, 5: 0.30,
+    6: 0.50, 7: 0.70, 8: 0.85, 9: 1.00, 10: 1.00,
 }
 
 # Rule-bot score to confidence mapping
