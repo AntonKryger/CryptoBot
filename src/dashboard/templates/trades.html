@@ -36,6 +36,7 @@
                 <th>Exit</th>
                 <th>P&L</th>
                 <th>Status</th>
+                <th>Balance</th>
             </tr>
         </thead>
         <tbody id="tradesBody">
@@ -79,6 +80,7 @@
                 <td>${t.exit_price ? t.exit_price.toFixed(4) : '-'}</td>
                 <td class="${plClass}">${t.profit_loss != null ? t.profit_loss.toFixed(2) : '-'}</td>
                 <td><span class="tag ${statusClass}">${t.status}</span></td>
+                <td>${t.balance_after != null ? t.balance_after.toFixed(2) : '-'}</td>
             </tr>`;
         }).join('');
     }

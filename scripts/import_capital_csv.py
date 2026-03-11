@@ -75,6 +75,7 @@ def import_csv(csv_path, db_path, bot_name):
                     "exit_timestamp": ts.isoformat(),
                     "profit_loss": amount,
                     "signal_details": f"Imported from Capital.com CSV ({bot_name})",
+                    "balance_after": balance,
                 })
 
     # Connect to DB
@@ -96,9 +97,15 @@ def import_csv(csv_path, db_path, bot_name):
             exit_price REAL,
             exit_timestamp TEXT,
             profit_loss REAL,
-            signal_details TEXT
+            signal_details TEXT,
+            balance_after REAL
         )
     """)
+    # Add balance_after column if missing (migration)
+    try:
+        db.execute("ALTER TABLE trades ADD COLUMN balance_after REAL")
+    except Exception:
+        pass
     db.execute("""
         CREATE TABLE IF NOT EXISTS balance_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,23 +127,25 @@ def import_csv(csv_path, db_path, bot_name):
     skipped = 0
     for t in trades:
         if t["deal_id"] in existing:
-            # Try to update existing trade with P&L if it's missing
+            # Update existing trade with P&L and balance if missing
             db.execute("""
-                UPDATE trades SET profit_loss = ?, exit_timestamp = ?, status = 'CLOSED'
+                UPDATE trades SET profit_loss = ?, exit_timestamp = ?, status = 'CLOSED',
+                    balance_after = ?
                 WHERE deal_id = ? AND (profit_loss IS NULL OR profit_loss = 0)
-            """, (t["profit_loss"], t["exit_timestamp"], t["deal_id"]))
+            """, (t["profit_loss"], t["exit_timestamp"], t["balance_after"], t["deal_id"]))
             skipped += 1
         else:
             db.execute("""
                 INSERT INTO trades (timestamp, epic, direction, size, entry_price,
                     stop_loss, take_profit, deal_id, status, exit_price,
-                    exit_timestamp, profit_loss, signal_details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exit_timestamp, profit_loss, signal_details, balance_after)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 t["timestamp"], t["epic"], t["direction"], t["size"],
                 t["entry_price"], t["stop_loss"], t["take_profit"],
                 t["deal_id"], t["status"], t["exit_price"],
                 t["exit_timestamp"], t["profit_loss"], t["signal_details"],
+                t["balance_after"],
             ))
             imported_trades += 1
 

@@ -45,9 +45,15 @@ class TradeExecutor:
                 exit_price REAL,
                 exit_timestamp TEXT,
                 profit_loss REAL,
-                signal_details TEXT
+                signal_details TEXT,
+                balance_after REAL
             )
         """)
+        # Add balance_after column if missing (migration for existing DBs)
+        try:
+            db.execute("ALTER TABLE trades ADD COLUMN balance_after REAL")
+        except Exception:
+            pass  # Column already exists
         db.execute("""
             CREATE TABLE IF NOT EXISTS balance_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
