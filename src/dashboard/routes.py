@@ -72,8 +72,7 @@ def calendar():
 @bp.route("/compare")
 def compare():
     ctx = _common_context()
-    comparison = current_app.stats.get_comparison()
-    return render_template("compare.html", comparison=comparison, **ctx)
+    return render_template("compare.html", **ctx)
 
 
 # ── JSON API ──────────────────────────────────────────────────
@@ -123,3 +122,9 @@ def api_balance():
 @bp.route("/api/comparison")
 def api_comparison():
     return jsonify(current_app.stats.get_comparison())
+
+
+@bp.route("/api/compare")
+def api_compare():
+    period = request.args.get("period", "all")
+    return jsonify(current_app.stats.get_period_comparison(period))

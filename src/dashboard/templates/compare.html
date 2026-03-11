@@ -4,116 +4,399 @@
 {% block content %}
 <h1>Sammenlign Bots</h1>
 
-<div class="compare-grid">
-    {% for bot_name, bot_data in comparison.items() %}
-    <div class="compare-card">
-        <h2>{{ bot_labels.get(bot_name, bot_name|upper) }}</h2>
-        <div class="compare-stats">
-            <div class="compare-row">
-                <span>Win Rate</span>
-                <span>{{ bot_data.overview.win_rate }}%</span>
-            </div>
-            <div class="compare-row">
-                <span>Total P&L</span>
-                <span class="{% if bot_data.overview.total_pl >= 0 %}positive{% else %}negative{% endif %}">
-                    EUR {{ "%.2f"|format(bot_data.overview.total_pl) }}
-                </span>
-            </div>
-            <div class="compare-row">
-                <span>Dagens P&L</span>
-                <span class="{% if bot_data.overview.today_pl >= 0 %}positive{% else %}negative{% endif %}">
-                    EUR {{ "%.2f"|format(bot_data.overview.today_pl) }}
-                </span>
-            </div>
-            <div class="compare-row">
-                <span>Profit Factor</span>
-                <span>{{ bot_data.overview.profit_factor }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Sharpe Ratio</span>
-                <span>{{ bot_data.stats.sharpe_ratio }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Max Drawdown</span>
-                <span class="negative">EUR {{ "%.2f"|format(bot_data.stats.max_drawdown) }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Trades</span>
-                <span>{{ bot_data.overview.closed_trades }} lukket / {{ bot_data.overview.open_trades }} aaben</span>
-            </div>
-            <div class="compare-row">
-                <span>Avg Win</span>
-                <span class="positive">EUR {{ "%.2f"|format(bot_data.overview.avg_win) }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Avg Loss</span>
-                <span class="negative">EUR {{ "%.2f"|format(bot_data.overview.avg_loss) }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Bedste Trade</span>
-                <span class="positive">EUR {{ "%.2f"|format(bot_data.stats.best_trade) }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Vaerste Trade</span>
-                <span class="negative">EUR {{ "%.2f"|format(bot_data.stats.worst_trade) }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Max Win Streak</span>
-                <span>{{ bot_data.stats.max_win_streak }}</span>
-            </div>
-            <div class="compare-row">
-                <span>Max Loss Streak</span>
-                <span>{{ bot_data.stats.max_loss_streak }}</span>
-            </div>
-        </div>
-    </div>
-    {% endfor %}
+<!-- Period selector -->
+<div class="period-selector">
+    <button class="period-btn" data-period="today" onclick="switchPeriod('today', this)">Dag</button>
+    <button class="period-btn" data-period="week" onclick="switchPeriod('week', this)">Uge</button>
+    <button class="period-btn" data-period="month" onclick="switchPeriod('month', this)">Maaned</button>
+    <button class="period-btn" data-period="year" onclick="switchPeriod('year', this)">Aar</button>
+    <button class="period-btn active" data-period="all" onclick="switchPeriod('all', this)">Total</button>
 </div>
 
-<div class="chart-card" style="margin-top: 2rem;">
-    <h3>Balance Sammenligning</h3>
-    <canvas id="compareBalanceChart"></canvas>
+<!-- 3 Bot comparison cards (original layout) -->
+<div class="compare-grid" id="botCards"></div>
+
+<!-- Charts -->
+<div class="chart-grid" style="margin-top:1.5rem;">
+    <div class="chart-card">
+        <h3>Kumulativ ROI %</h3>
+        <canvas id="roiChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>Win Rate</h3>
+        <canvas id="winRateChart"></canvas>
+    </div>
+</div>
+
+<div class="chart-grid" style="margin-top:1.5rem;">
+    <div class="chart-card">
+        <h3>Daglig P&L (EUR)</h3>
+        <canvas id="dailyPnlChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>Profit Factor</h3>
+        <canvas id="profitFactorChart"></canvas>
+    </div>
+</div>
+
+<div class="chart-grid" style="margin-top:1.5rem;">
+    <div class="chart-card">
+        <h3>Performance pr. Coin (ROI %)</h3>
+        <canvas id="coinChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>Retning: BUY vs SELL (P&L)</h3>
+        <canvas id="directionChart"></canvas>
+    </div>
+</div>
+
+<!-- Detailed stats table -->
+<div class="chart-card" style="margin-top:1.5rem;">
+    <h3>Detaljeret Sammenligning</h3>
+    <div class="table-wrapper">
+        <table id="detailTable">
+            <thead><tr><th>Metrik</th></tr></thead>
+            <tbody id="detailBody"></tbody>
+        </table>
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    async function loadCompareBalance() {
-        const botColors = {
-            'rule': '#00d4aa',
-            'ai': '#ffa502',
-            'demo': '#5f9df7',
-        };
-        const botLabels = {{ bot_labels | tojson }};
-        const datasets = [];
-        let longestTimestamps = [];
+const BOT_COLORS = { rule: '#00d4aa', ai: '#ffa502', demo: '#5f9df7' };
+const BOT_LABELS_MAP = {{ bot_labels | tojson }};
+let currentPeriod = 'all';
+let chartInstances = {};
 
-        for (const botKey of Object.keys(botLabels)) {
-            try {
-                const resp = await fetch(`/api/balance?bot=${botKey}`);
-                const data = await resp.json();
-                if (data.timestamps.length > longestTimestamps.length) {
-                    longestTimestamps = data.timestamps;
-                }
-                datasets.push({
-                    label: botLabels[botKey],
-                    data: data.balances,
-                    borderColor: botColors[botKey] || '#e0e0e0',
-                    backgroundColor: 'transparent',
-                    tension: 0.3,
-                    pointRadius: 0,
-                });
-            } catch (e) {}
-        }
+function switchPeriod(period, btn) {
+    document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentPeriod = period;
+    loadCompareData();
+}
 
-        const ctx = document.getElementById('compareBalanceChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'line',
-            data: { labels: longestTimestamps, datasets },
-            options: chartDefaults
+async function loadCompareData() {
+    try {
+        const resp = await fetch('/api/compare?period=' + currentPeriod);
+        if (!resp.ok) throw new Error('API error: ' + resp.status);
+        const data = await resp.json();
+        renderBotCards(data);
+        renderROIChart(data);
+        renderWinRateChart(data);
+        renderDailyPnlChart(data);
+        renderProfitFactorChart(data);
+        renderCoinChart(data);
+        renderDirectionChart(data);
+        renderDetailTable(data);
+    } catch (e) {
+        console.error('Compare load error:', e);
+        document.getElementById('botCards').innerHTML =
+            '<div class="no-data">Fejl ved indlaesning: ' + e.message + '</div>';
+    }
+}
+
+function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function fmtEur(v) { return (v >= 0 ? '+' : '') + v.toFixed(2); }
+function plClass(v) { return v > 0 ? 'positive' : v < 0 ? 'negative' : ''; }
+
+function renderBotCards(data) {
+    const bots = Object.keys(data);
+    let html = '';
+    for (const bot of bots) {
+        const d = data[bot];
+        html += `<div class="compare-card">
+            <h2>${BOT_LABELS_MAP[bot] || bot}</h2>
+            <div class="compare-stats">
+                <div class="compare-row">
+                    <span>Win Rate</span>
+                    <span>${d.win_rate.toFixed(1)}%</span>
+                </div>
+                <div class="compare-row">
+                    <span>ROI</span>
+                    <span class="${plClass(d.roi_pct)}">${fmtPct(d.roi_pct)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Total P&L</span>
+                    <span class="${plClass(d.total_pl)}">EUR ${fmtEur(d.total_pl)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Profit Factor</span>
+                    <span>${d.profit_factor.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Sharpe Ratio</span>
+                    <span>${d.sharpe.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Max Drawdown</span>
+                    <span class="negative">${d.max_dd_pct.toFixed(2)}%</span>
+                </div>
+                <div class="compare-row">
+                    <span>Trades</span>
+                    <span>${d.trades} lukket / ${d.open} aaben</span>
+                </div>
+                <div class="compare-row">
+                    <span>Avg Win</span>
+                    <span class="positive">EUR ${d.avg_win.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Avg Loss</span>
+                    <span class="negative">EUR ${d.avg_loss.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Bedste Trade</span>
+                    <span class="positive">EUR ${d.best_trade.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Vaerste Trade</span>
+                    <span class="negative">EUR ${d.worst_trade.toFixed(2)}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Max Win Streak</span>
+                    <span>${d.max_win_streak}</span>
+                </div>
+                <div class="compare-row">
+                    <span>Max Loss Streak</span>
+                    <span>${d.max_loss_streak}</span>
+                </div>
+            </div>
+        </div>`;
+    }
+    document.getElementById('botCards').innerHTML = html;
+}
+
+function destroyChart(id) {
+    if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; }
+}
+
+function renderROIChart(data) {
+    destroyChart('roi');
+    const datasets = [];
+    let allDates = new Set();
+
+    for (const bd of Object.values(data)) {
+        const dpnl = bd.daily_pnl || {};
+        (dpnl.dates || []).forEach(d => allDates.add(d));
+    }
+    allDates = [...allDates].sort();
+    if (allDates.length === 0) return;
+
+    for (const [bot, bd] of Object.entries(data)) {
+        const dpnl = bd.daily_pnl || {};
+        const dateMap = {};
+        (dpnl.dates || []).forEach((d, i) => dateMap[d] = dpnl.cumulative_pct[i]);
+        let lastVal = 0;
+        const values = allDates.map(d => {
+            if (dateMap[d] !== undefined) lastVal = dateMap[d];
+            return lastVal;
+        });
+        datasets.push({
+            label: BOT_LABELS_MAP[bot] || bot,
+            data: values,
+            borderColor: BOT_COLORS[bot],
+            backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 0, borderWidth: 2,
         });
     }
 
-    loadCompareBalance();
+    const ctx = document.getElementById('roiChart').getContext('2d');
+    chartInstances.roi = new Chart(ctx, {
+        type: 'line',
+        data: { labels: allDates, datasets },
+        options: {
+            ...chartDefaults,
+            scales: {
+                ...chartDefaults.scales,
+                y: { ...chartDefaults.scales.y, ticks: { ...chartDefaults.scales.y.ticks, callback: v => v + '%' } }
+            }
+        }
+    });
+}
+
+function renderWinRateChart(data) {
+    destroyChart('wr');
+    const bots = Object.keys(data);
+    const ctx = document.getElementById('winRateChart').getContext('2d');
+    chartInstances.wr = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: bots.map(b => BOT_LABELS_MAP[b] || b),
+            datasets: [{
+                label: 'Win Rate %',
+                data: bots.map(b => data[b].win_rate || 0),
+                backgroundColor: bots.map(b => BOT_COLORS[b]),
+                borderRadius: 6,
+            }]
+        },
+        options: {
+            ...chartDefaults,
+            scales: {
+                ...chartDefaults.scales,
+                y: { ...chartDefaults.scales.y, beginAtZero: true, max: 100, ticks: { color: '#a0a0b0', callback: v => v + '%' } }
+            }
+        }
+    });
+}
+
+function renderDailyPnlChart(data) {
+    destroyChart('dpnl');
+    const datasets = [];
+    let allDates = new Set();
+
+    for (const bd of Object.values(data)) {
+        const dpnl = bd.daily_pnl || {};
+        (dpnl.dates || []).forEach(d => allDates.add(d));
+    }
+    allDates = [...allDates].sort();
+    if (allDates.length === 0) return;
+
+    for (const [bot, bd] of Object.entries(data)) {
+        const dpnl = bd.daily_pnl || {};
+        const dateMap = {};
+        (dpnl.dates || []).forEach((d, i) => dateMap[d] = dpnl.pnl[i]);
+        datasets.push({
+            label: BOT_LABELS_MAP[bot] || bot,
+            data: allDates.map(d => dateMap[d] || 0),
+            backgroundColor: BOT_COLORS[bot] + '99',
+            borderColor: BOT_COLORS[bot],
+            borderWidth: 1, borderRadius: 4,
+        });
+    }
+
+    const ctx = document.getElementById('dailyPnlChart').getContext('2d');
+    chartInstances.dpnl = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: allDates, datasets },
+        options: chartDefaults
+    });
+}
+
+function renderProfitFactorChart(data) {
+    destroyChart('pf');
+    const bots = Object.keys(data);
+    const ctx = document.getElementById('profitFactorChart').getContext('2d');
+    chartInstances.pf = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: bots.map(b => BOT_LABELS_MAP[b] || b),
+            datasets: [{
+                label: 'Profit Factor',
+                data: bots.map(b => data[b].profit_factor || 0),
+                backgroundColor: bots.map(b => BOT_COLORS[b]),
+                borderRadius: 6,
+            }]
+        },
+        options: {
+            ...chartDefaults,
+            scales: {
+                ...chartDefaults.scales,
+                y: { ...chartDefaults.scales.y, beginAtZero: true }
+            }
+        }
+    });
+}
+
+function renderCoinChart(data) {
+    destroyChart('coin');
+    const bots = Object.keys(data);
+    const allCoins = new Set();
+    for (const bd of Object.values(data)) {
+        (bd.coin_stats || []).forEach(c => allCoins.add(c.epic));
+    }
+    const coins = [...allCoins].sort();
+    if (coins.length === 0) return;
+
+    const datasets = bots.map(bot => {
+        const coinMap = {};
+        (data[bot].coin_stats || []).forEach(c => coinMap[c.epic] = c.roi_pct);
+        return {
+            label: BOT_LABELS_MAP[bot] || bot,
+            data: coins.map(c => coinMap[c] || 0),
+            backgroundColor: BOT_COLORS[bot] + '99',
+            borderColor: BOT_COLORS[bot],
+            borderWidth: 1, borderRadius: 4,
+        };
+    });
+
+    const ctx = document.getElementById('coinChart').getContext('2d');
+    chartInstances.coin = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: coins, datasets },
+        options: {
+            ...chartDefaults,
+            scales: {
+                ...chartDefaults.scales,
+                y: { ...chartDefaults.scales.y, ticks: { color: '#a0a0b0', callback: v => v + '%' } }
+            }
+        }
+    });
+}
+
+function renderDirectionChart(data) {
+    destroyChart('dir');
+    const bots = Object.keys(data);
+    const datasets = [
+        {
+            label: 'BUY P&L',
+            data: bots.map(b => data[b].direction_stats?.buy_pl || 0),
+            backgroundColor: '#00d4aa99', borderColor: '#00d4aa', borderWidth: 1, borderRadius: 4,
+        },
+        {
+            label: 'SELL P&L',
+            data: bots.map(b => data[b].direction_stats?.sell_pl || 0),
+            backgroundColor: '#ff475799', borderColor: '#ff4757', borderWidth: 1, borderRadius: 4,
+        }
+    ];
+
+    const ctx = document.getElementById('directionChart').getContext('2d');
+    chartInstances.dir = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: bots.map(b => BOT_LABELS_MAP[b] || b), datasets },
+        options: chartDefaults
+    });
+}
+
+function renderDetailTable(data) {
+    const bots = Object.keys(data);
+    const thead = '<tr><th>Metrik</th>' + bots.map(b =>
+        `<th style="color:${BOT_COLORS[b]}">${BOT_LABELS_MAP[b] || b}</th>`
+    ).join('') + '</tr>';
+    document.querySelector('#detailTable thead').innerHTML = thead;
+
+    const rows = [
+        ['Startbalance', b => 'EUR ' + b.start_balance.toFixed(2)],
+        ['Trades', b => b.trades],
+        ['Wins / Losses', b => b.wins + ' / ' + b.losses],
+        ['Win Rate', b => b.win_rate.toFixed(1) + '%'],
+        ['ROI', b => fmtPct(b.roi_pct)],
+        ['Total P&L', b => 'EUR ' + fmtEur(b.total_pl)],
+        ['Avg Win', b => 'EUR ' + b.avg_win.toFixed(2) + ' (' + fmtPct(b.avg_win_pct) + ')'],
+        ['Avg Loss', b => 'EUR ' + b.avg_loss.toFixed(2) + ' (' + fmtPct(b.avg_loss_pct) + ')'],
+        ['Profit Factor', b => b.profit_factor.toFixed(2)],
+        ['Sharpe Ratio', b => b.sharpe.toFixed(2)],
+        ['Max Drawdown', b => b.max_dd_pct.toFixed(2) + '%'],
+        ['Bedste Trade', b => 'EUR ' + b.best_trade.toFixed(2)],
+        ['Vaerste Trade', b => 'EUR ' + b.worst_trade.toFixed(2)],
+        ['Max Win Streak', b => b.max_win_streak],
+        ['Max Loss Streak', b => b.max_loss_streak],
+        ['Aabne Positioner', b => b.open],
+        ['BUY trades', b => b.direction_stats?.buy_count || 0],
+        ['SELL trades', b => b.direction_stats?.sell_count || 0],
+    ];
+
+    let html = '';
+    for (const [label, fn] of rows) {
+        html += '<tr><td>' + label + '</td>';
+        for (const b of bots) {
+            html += '<td>' + fn(data[b]) + '</td>';
+        }
+        html += '</tr>';
+    }
+    document.getElementById('detailBody').innerHTML = html;
+}
+
+// chartDefaults is defined in dashboard.js (loaded globally)
+loadCompareData();
 </script>
 {% endblock %}

@@ -288,15 +288,20 @@ class TradeExecutor:
                 pl_str = f"P/L: EUR {profit_loss:+.2f}" if profit_loss is not None else "P/L: unknown"
                 logger.info(f"Reconciled {epic} (id={trade_id}) as CLOSED ({pl_str})")
 
-            # --- Step 2: Backfill CLOSED trades missing P/L ---
+            # --- Step 2: Backfill/correct P/L for CLOSED trades ---
+            # Include NULL P/L AND recently-closed trades (within 48h)
+            # that may have estimated P/L from watchdog (not actual from Capital.com)
+            cutoff = (datetime.now() - timedelta(hours=48)).isoformat()
             cursor2 = db.execute(
-                "SELECT id, epic, timestamp FROM trades "
-                "WHERE status = 'CLOSED' AND profit_loss IS NULL ORDER BY timestamp"
+                "SELECT id, epic, timestamp, profit_loss FROM trades "
+                "WHERE status = 'CLOSED' AND (profit_loss IS NULL OR exit_timestamp > ?) "
+                "ORDER BY timestamp",
+                (cutoff,)
             )
             missing = cursor2.fetchall()
             backfilled = 0
 
-            for trade_id, epic, ts in missing:
+            for trade_id, epic, ts, existing_pl in missing:
                 profit_loss, exit_ts, new_deal_id = self._match_close(
                     epic, ts, closes_by_epic
                 )
@@ -308,6 +313,11 @@ class TradeExecutor:
                         WHERE id = ?
                     """, (profit_loss, exit_ts, new_deal_id, trade_id))
                     backfilled += 1
+                    if existing_pl is not None and abs(profit_loss - existing_pl) > 0.01:
+                        logger.info(
+                            f"P/L corrected {epic} (id={trade_id}): "
+                            f"estimated {existing_pl:+.2f} -> actual {profit_loss:+.2f}"
+                        )
 
             if reconciled > 0 or backfilled > 0:
                 self._update_balance_after(db)

@@ -334,7 +334,85 @@ tr:hover { background: rgba(255,255,255,0.03); }
     display: inline-block;
 }
 
-/* Compare */
+/* Compare - Period selector */
+.period-selector {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 1.5rem;
+}
+
+.period-btn {
+    background: var(--bg-accent);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    padding: 0.5rem 1.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.period-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.period-btn.active {
+    background: var(--green);
+    color: var(--bg-primary);
+    border-color: var(--green);
+    font-weight: 600;
+}
+
+/* Compare - KPI grid */
+.compare-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+}
+
+.compare-kpi-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+}
+
+.compare-kpi-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.6rem;
+}
+
+.compare-kpi-values {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.compare-kpi-bot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.2rem 0;
+}
+
+.compare-kpi-bot.best {
+    font-weight: 600;
+}
+
+.compare-kpi-bot-name {
+    font-size: 0.8rem;
+}
+
+.compare-kpi-bot-value {
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+/* Legacy compare (keep for compatibility) */
 .compare-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
