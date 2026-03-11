@@ -15,7 +15,7 @@
         <div class="nav-brand">CryptoBot</div>
         <div class="nav-links">
             <a href="/?bot={{ current_bot or '' }}" class="{% if request.path == '/' %}active{% endif %}">Oversigt</a>
-            <a href="/trades?bot={{ current_bot or '' }}" class="{% if request.path == '/trades' %}active{% endif %}">Trades</a>
+            <a href="/trades?bot={{ current_bot or '' }}" class="{% if request.path == '/trades' %}active{% endif %}">Rapporter</a>
             <a href="/stats?bot={{ current_bot or '' }}" class="{% if request.path == '/stats' %}active{% endif %}">Statistik</a>
             <a href="/instruments?bot={{ current_bot or '' }}" class="{% if request.path == '/instruments' %}active{% endif %}">Coins</a>
             <a href="/calendar?bot={{ current_bot or '' }}" class="{% if request.path == '/calendar' %}active{% endif %}">Kalender</a>

@@ -189,6 +189,44 @@ h1 {
     border-color: var(--green);
 }
 
+/* Sub-tabs (like Capital.com) */
+.sub-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid var(--border);
+}
+
+.sub-tab {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 0.7rem 1.2rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+}
+
+.sub-tab:hover {
+    color: var(--text-primary);
+}
+
+.sub-tab.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+    font-weight: 600;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
 /* Tables */
 .table-wrapper {
     overflow-x: auto;
