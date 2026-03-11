@@ -5,7 +5,7 @@ Reads from SQLite databases (rule bot + AI bot) and computes all metrics.
 
 import sqlite3
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 class StatsEngine:
@@ -101,8 +101,8 @@ class StatsEngine:
         total_wins = wins["profit_loss"].sum() if not wins.empty else 0
         total_losses = abs(losses["profit_loss"].sum()) if not losses.empty else 0
 
-        # Today's P&L
-        today = datetime.now().strftime("%Y-%m-%d")
+        # Today's P&L (VPS stores timestamps in UTC)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         today_pl = 0
         if not closed.empty and "exit_timestamp" in closed.columns:
             today_closed = closed[closed["exit_timestamp"].str.startswith(today, na=False)]
@@ -300,14 +300,14 @@ class StatsEngine:
             return {"timestamps": [], "balances": []}
 
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-        cutoff = datetime.now() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         df = df[df["timestamp"] >= cutoff].sort_values("timestamp")
 
         if bot_name:
             df = df[df["bot"] == bot_name]
 
         return {
-            "timestamps": [t.isoformat() for t in df["timestamp"]],
+            "timestamps": [t.isoformat() + "Z" for t in df["timestamp"]],
             "balances": [round(float(b), 2) for b in df["balance"]],
         }
 

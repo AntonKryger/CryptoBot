@@ -172,13 +172,14 @@
 
     function formatDate(iso) {
         if (!iso) return '-';
-        const d = new Date(iso);
+        // Append 'Z' if no timezone info — VPS stores UTC timestamps
+        const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
         return d.toLocaleDateString('da-DK');
     }
 
     function formatTime(iso) {
         if (!iso) return '-';
-        const d = new Date(iso);
+        const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
         return d.toLocaleTimeString('da-DK', {hour:'2-digit', minute:'2-digit'});
     }
 
