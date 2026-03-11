@@ -245,6 +245,12 @@ class CapitalClient:
 
         return self._request("POST", "/api/v1/workingorders", json=body)
 
+    # ── Deal Confirmation ──────────────────────────────────────────
+
+    def get_deal_confirmation(self, deal_reference):
+        """Get deal confirmation, returns actual dealId for a dealReference."""
+        return self._request("GET", f"/api/v1/confirms/{deal_reference}")
+
     # ── Activity / History ──────────────────────────────────────────
 
     def get_activity_history(self, from_date=None, to_date=None):

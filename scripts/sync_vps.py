@@ -53,6 +53,7 @@ def sync_once():
                     local_path,
                 ],
                 capture_output=True, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
                 synced += 1
