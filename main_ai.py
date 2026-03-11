@@ -241,6 +241,15 @@ class CryptoBotAI:
 
                 if signal_type in ("BUY", "SELL"):
                     confidence = details.get("ai_confidence", 5)
+
+                    # Hard time-of-day filter: block counter-bias trades in strong bearish/bullish hours
+                    if signal_type == "BUY" and time_bias_label == "BEARISH" and time_bias_return < -0.10:
+                        logger.warning(f"[AI] {epic}: BUY BLOCKED - bearish hour (avg return {time_bias_return:+.3f}%)")
+                        continue
+                    if signal_type == "SELL" and time_bias_label == "BULLISH" and time_bias_return > 0.10:
+                        logger.warning(f"[AI] {epic}: SELL BLOCKED - bullish hour (avg return {time_bias_return:+.3f}%)")
+                        continue
+
                     trade_signals.append((epic, signal_type, confidence, details))
                     logger.info(f"[AI] {epic}: {signal_type} (confidence: {confidence}) -> til allokering")
                 else:

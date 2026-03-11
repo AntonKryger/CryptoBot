@@ -199,6 +199,19 @@ class CryptoBot:
                 self.watchdog.update_atr(epic, atr_pct)
 
                 if signal_type in ("BUY", "SELL"):
+                    # Hard time-of-day filter: block counter-bias trades in strong bearish/bullish hours
+                    if self.time_bias:
+                        try:
+                            bias, avg_ret, _ = self.time_bias.get_bias(epic)
+                            if signal_type == "BUY" and bias == "BEARISH" and avg_ret < -0.10:
+                                logger.warning(f"{epic}: BUY BLOCKED - bearish hour (avg return {avg_ret:+.3f}%)")
+                                continue
+                            if signal_type == "SELL" and bias == "BULLISH" and avg_ret > 0.10:
+                                logger.warning(f"{epic}: SELL BLOCKED - bullish hour (avg return {avg_ret:+.3f}%)")
+                                continue
+                        except Exception:
+                            pass
+
                     strength = details.get("signal_strength", 4)
                     # Map rule-bot score to confidence for capital allocation
                     confidence = self.risk.map_rule_score_to_confidence(strength)

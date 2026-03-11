@@ -56,18 +56,20 @@ class TimeBias:
         """Get score adjustment based on time-of-day bias.
 
         Returns:
-            int: -1, 0, or +1 adjustment to signal score
+            int: -2 to +2 adjustment to signal score
+            Strong hours (avg return > 0.10% or < -0.10%) get ±2.
         """
         bias, avg_return, _ = self.get_bias(epic)
+        strong = abs(avg_return) > 0.10  # Strong hour = bigger adjustment
 
         if bias == "BULLISH" and signal_direction == "BUY":
-            return 1
+            return 2 if strong else 1
         elif bias == "BULLISH" and signal_direction == "SELL":
-            return -1
+            return -2 if strong else -1
         elif bias == "BEARISH" and signal_direction == "SELL":
-            return 1
+            return 2 if strong else 1
         elif bias == "BEARISH" and signal_direction == "BUY":
-            return -1
+            return -2 if strong else -1
 
         return 0
 
