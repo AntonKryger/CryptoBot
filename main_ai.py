@@ -256,6 +256,12 @@ class CryptoBotAI:
 
                 # Get regime and time bias
                 regime, adx = self.regime.get_regime(epic)
+
+                # ── ADX HARD GATE: no trades in choppy markets ──
+                if adx < 20:
+                    logger.info(f"[AI] {epic}: ADX GATE — ADX {adx:.1f} < 20 (choppy market), skipping")
+                    continue
+
                 time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
                 # Get higher-timeframe context
                 htf_context = None
@@ -357,6 +363,22 @@ class CryptoBotAI:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
+                # ── R:R HARD GATE: minimum 1:2 risk/reward ──
+                if signal_type == "BUY":
+                    risk = current_price - stop_loss
+                    reward = take_profit - current_price
+                else:
+                    risk = stop_loss - current_price
+                    reward = current_price - take_profit
+                if risk > 0:
+                    rr_ratio = reward / risk
+                    if rr_ratio < 2.0:
+                        logger.warning(f"[R:R GATE] {epic}: R:R {rr_ratio:.2f}:1 < 2.0 minimum, trade afvist")
+                        continue
+                else:
+                    logger.warning(f"[R:R GATE] {epic}: Invalid risk={risk:.4f}, trade afvist")
+                    continue
+
                 # ── HARD RULES CHECK ──
                 risk_eur = self.hard_rules.calculate_risk_eur(current_price, stop_loss, size)
                 can_trade, rule_reason = self.hard_rules.can_trade(
@@ -431,6 +453,11 @@ class CryptoBotAI:
 
             # Get regime
             regime, adx = self.regime.get_regime(epic)
+
+            # ── ADX HARD GATE for cycle trades ──
+            if adx < 20:
+                logger.info(f"[Cycle] {epic}: ADX GATE — ADX {adx:.1f} < 20 (choppy market), no reversal")
+                return
 
             # Get higher-timeframe context
             htf_context = None
@@ -525,6 +552,22 @@ class CryptoBotAI:
             else:
                 stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
             take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
+
+            # ── R:R HARD GATE for cycle trade ──
+            if signal_type == "BUY":
+                c_risk = current_price - stop_loss
+                c_reward = take_profit - current_price
+            else:
+                c_risk = stop_loss - current_price
+                c_reward = current_price - take_profit
+            if c_risk > 0:
+                c_rr = c_reward / c_risk
+                if c_rr < 2.0:
+                    logger.warning(f"[Cycle] {epic}: R:R {c_rr:.2f}:1 < 2.0 minimum, cycle trade afvist")
+                    return
+            else:
+                logger.warning(f"[Cycle] {epic}: Invalid risk, cycle trade afvist")
+                return
 
             # Hard rules check for cycle trade
             positions = self.client.get_positions()
