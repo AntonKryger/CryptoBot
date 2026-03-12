@@ -387,7 +387,8 @@ class PositionWatchdog:
                 )
                 self.client.close_position(deal_id, direction=direction, size=size)
                 self._set_cooldown(epic)
-                self._update_trade_db(deal_id, current_price, pl_pct, size, entry_price, epic=epic)
+                self._update_trade_db(deal_id, current_price, pl_pct, size, entry_price, epic=epic,
+                                      exit_reason=f"profit_pullback|peak={peak_profit_pct:.1f}%|pullback={drawdown_from_peak_pct:.2f}%|threshold={adaptive_pullback:.2f}%")
                 self.notifier.send(
                     f"💰 <b>Profit taget: {epic}</b>\n"
                     f"Peak: +{peak_profit_pct:.1f}% | Lukket: +{pl_pct:.1f}%\n"
@@ -436,7 +437,8 @@ class PositionWatchdog:
                 )
                 self.client.close_position(deal_id, direction=direction, size=size)
                 self._set_cooldown(epic)
-                self._update_trade_db(deal_id, current_price, pl_pct, size, entry_price, epic=epic)
+                self._update_trade_db(deal_id, current_price, pl_pct, size, entry_price, epic=epic,
+                                      exit_reason=f"trailing_stop|peak={peak:.4f}|drawdown={drawdown_from_peak_pct:.1f}%|trail={trailing_distance:.1f}%")
                 self.notifier.send(
                     f"🔒 <b>Trailing stop: {epic}</b>\n"
                     f"Peak: {peak:.4f} | Lukket: {current_price:.4f}\n"
@@ -482,8 +484,8 @@ class PositionWatchdog:
             # Need entry_price for DB update - get from position data
             self.client.close_position(deal_id, direction=direction, size=size)
             self._set_cooldown(epic)
-            # Note: pl_pct and size available from caller scope via _evaluate_position
-            self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic)
+            self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic,
+                                          exit_reason=f"sentiment_close|bias={bias}|avg_return={avg_return:+.3f}%")
             self.notifier.send(
                 f"🌙 <b>Sentiment close: {epic}</b>\n"
                 f"Time bias: {bias} (avg return: {avg_return:+.3f}%)\n"
@@ -571,7 +573,8 @@ class PositionWatchdog:
             )
             self.client.close_position(deal_id, direction=direction, size=size)
             self._set_cooldown(epic)
-            self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic)
+            self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic,
+                                          exit_reason=f"max_hold_time|hold={hold_hours:.1f}h|max={max_hours}h|category={self.risk.get_coin_category(epic)}")
             self.notifier.send(
                 f"⏰ <b>Max holdtid ({status}): {epic}</b>\n"
                 f"Holdtid: {hold_hours:.1f} timer (max: {max_hours}h)\n"
@@ -638,7 +641,8 @@ class PositionWatchdog:
                 try:
                     self.client.close_position(deal_id, direction=direction, size=partial_size)
                     self._partial_taken.add(deal_id)
-                    self._update_trade_db_by_deal(deal_id, pl_pct, partial=True, epic=epic)
+                    self._update_trade_db_by_deal(deal_id, pl_pct, partial=True, epic=epic,
+                                                  exit_reason="early_exit_partial|adverse_candles=3")
                     logger.warning(
                         f"WATCHDOG: Early exit (50%) {epic} - 3 accelerating adverse candles, P/L: {pl_pct:+.1f}%"
                     )
@@ -655,7 +659,8 @@ class PositionWatchdog:
             try:
                 self.client.close_position(deal_id, direction=direction, size=size)
                 self._set_cooldown(epic)
-                self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic)
+                self._update_trade_db_by_deal(deal_id, pl_pct, epic=epic,
+                                              exit_reason=f"early_exit_full|adverse_candles={len(adverse_candles)}")
                 logger.warning(
                     f"WATCHDOG: Full early exit {epic} - {len(adverse_candles)} accelerating adverse candles"
                 )
@@ -732,7 +737,7 @@ class PositionWatchdog:
         except Exception as e:
             logger.warning(f"Watchdog: TP extension failed for {epic}: {e}")
 
-    def _update_trade_db(self, deal_id, exit_price, pl_pct, size, entry_price, partial=False, epic=None):
+    def _update_trade_db(self, deal_id, exit_price, pl_pct, size, entry_price, partial=False, epic=None, exit_reason=None):
         """Update trade DB after watchdog closes a position."""
         if not self.executor:
             return
@@ -741,11 +746,11 @@ class PositionWatchdog:
             self.executor.update_trade_close(deal_id, exit_price, partial_pl, partial=True, epic=epic)
         else:
             estimated_pl = pl_pct / 100 * entry_price * size
-            self.executor.update_trade_close(deal_id, exit_price, estimated_pl, epic=epic)
+            self.executor.update_trade_close(deal_id, exit_price, estimated_pl, epic=epic, exit_reason=exit_reason)
             # Notify hard rules and post-trade analyzer on full close
             self._fire_close_callbacks(deal_id, epic, estimated_pl)
 
-    def _update_trade_db_by_deal(self, deal_id, pl_pct, partial=False, epic=None):
+    def _update_trade_db_by_deal(self, deal_id, pl_pct, partial=False, epic=None, exit_reason=None):
         """Update trade DB when we only have deal_id and pl_pct (no entry_price in scope)."""
         if not self.executor:
             return
@@ -769,7 +774,7 @@ class PositionWatchdog:
                 entry_price, size, matched_epic = row
                 estimated_pl = pl_pct / 100 * entry_price * size
                 exit_price = entry_price * (1 + pl_pct / 100)
-                self.executor.update_trade_close(deal_id, round(exit_price, 5), estimated_pl, partial=partial, epic=matched_epic)
+                self.executor.update_trade_close(deal_id, round(exit_price, 5), estimated_pl, partial=partial, epic=matched_epic, exit_reason=exit_reason)
                 if not partial:
                     self._fire_close_callbacks(deal_id, matched_epic, estimated_pl)
             else:

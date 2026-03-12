@@ -267,8 +267,11 @@ class CryptoBot:
                 )
 
                 if result:
+                    acct_snap, risk_snap = self.executor.build_snapshots(
+                        balance, len(open_positions), current_price, stop_loss, take_profit, size, signal_type)
                     self.executor._log_trade(epic, signal_type, size, current_price,
-                                             stop_loss, take_profit, result, details)
+                                             stop_loss, take_profit, result, details,
+                                             account_snapshot=acct_snap, risk_snapshot=risk_snap)
                     self.executor._recently_traded[epic] = datetime.now()
                     # Track in watchdog for trend-aware exit
                     deal_id = result.get("dealReference") or result.get("dealId", "")
@@ -343,8 +346,11 @@ class CryptoBot:
             )
 
             if result:
+                acct_snap, risk_snap = self.executor.build_snapshots(
+                    balance, 0, current_price, stop_loss, take_profit, size, signal_type)
                 self.executor._log_trade(epic, signal_type, size, current_price,
-                                         stop_loss, take_profit, result, details)
+                                         stop_loss, take_profit, result, details,
+                                         account_snapshot=acct_snap, risk_snapshot=risk_snap)
                 self.executor._recently_traded[epic] = datetime.now()
                 deal_id = result.get("dealReference") or result.get("dealId", "")
                 regime = details.get("regime", "")

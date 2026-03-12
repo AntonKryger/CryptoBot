@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 import os
@@ -59,7 +60,7 @@ class TradeExecutor:
             db.execute("ALTER TABLE trades ADD COLUMN source TEXT DEFAULT 'bot'")
         except Exception:
             pass  # Column already exists
-        # Trade journal columns
+        # Migration columns
         for col, col_type in [
             ("journal_why", "TEXT"),
             ("journal_expected_target", "REAL"),
@@ -67,6 +68,12 @@ class TradeExecutor:
             ("post_analysis", "TEXT"),
             ("post_analysis_timestamp", "TEXT"),
             ("alignment_score", "INTEGER"),
+            # v2: comprehensive trade logging
+            ("exit_reason", "TEXT"),
+            ("account_snapshot", "TEXT"),
+            ("risk_snapshot", "TEXT"),
+            ("gates_snapshot", "TEXT"),
+            ("ai_raw_response", "TEXT"),
         ]:
             try:
                 db.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
@@ -85,7 +92,30 @@ class TradeExecutor:
         db.commit()
         db.close()
 
-    def execute_trade(self, epic, signal, signal_details, current_price):
+    def build_snapshots(self, balance_info, open_count, current_price, stop_loss, take_profit, size, direction):
+        """Build account/risk snapshots for comprehensive trade logging."""
+        balance = balance_info.get("balance", 0)
+        risk_eur = abs(current_price - stop_loss) * size
+        sl_dist = abs(current_price - stop_loss)
+        tp_dist = abs(take_profit - current_price)
+        rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
+        account_snap = {
+            "balance": balance,
+            "available": balance_info.get("available", balance),
+            "open_positions": open_count,
+            "profit_loss": balance_info.get("profitLoss", 0),
+        }
+        risk_snap = {
+            "size": size,
+            "risk_eur": round(risk_eur, 2),
+            "risk_pct": round(risk_eur / balance * 100, 2) if balance > 0 else 0,
+            "rr_ratio": rr_ratio,
+            "sl_distance_pct": round(sl_dist / current_price * 100, 2),
+            "tp_distance_pct": round(tp_dist / current_price * 100, 2),
+        }
+        return account_snap, risk_snap
+
+    def execute_trade(self, epic, signal, signal_details, current_price, gates_snapshot=None):
         """Execute a BUY or SELL trade with risk management."""
         # Check local cooldown first (prevents rapid-fire duplicates)
         now = datetime.now()
@@ -118,6 +148,27 @@ class TradeExecutor:
         size = self.risk.calculate_position_size(current_balance, current_price)
         stop_loss = self.risk.calculate_stop_loss(current_price, signal)
         take_profit = self.risk.calculate_take_profit(current_price, signal, sl_price=stop_loss)
+
+        # Build snapshots for comprehensive logging
+        account_snap = json.dumps({
+            "balance": current_balance,
+            "available": balance_info.get("available", current_balance),
+            "open_positions": open_count,
+            "profit_loss": balance_info.get("profitLoss", 0),
+        })
+        risk_eur = abs(current_price - stop_loss) * size
+        sl_dist = abs(current_price - stop_loss)
+        tp_dist = abs(take_profit - current_price)
+        rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
+        risk_snap = json.dumps({
+            "size": size,
+            "risk_eur": round(risk_eur, 2),
+            "risk_pct": round(risk_eur / current_balance * 100, 2) if current_balance > 0 else 0,
+            "rr_ratio": rr_ratio,
+            "sl_distance_pct": round(sl_dist / current_price * 100, 2),
+            "tp_distance_pct": round(tp_dist / current_price * 100, 2),
+        })
+        gates_json = json.dumps(gates_snapshot) if gates_snapshot else None
 
         # Execute the trade
         try:
@@ -154,8 +205,9 @@ class TradeExecutor:
                 return result, None
             db.execute("""
                 INSERT INTO trades (timestamp, epic, direction, size, entry_price,
-                                    stop_loss, take_profit, deal_id, status, signal_details, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot')
+                                    stop_loss, take_profit, deal_id, status, signal_details, source,
+                                    account_snapshot, risk_snapshot, gates_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?)
             """, (
                 datetime.now().isoformat(),
                 epic,
@@ -165,7 +217,10 @@ class TradeExecutor:
                 stop_loss,
                 take_profit,
                 deal_id,
-                str(signal_details),
+                json.dumps(signal_details) if isinstance(signal_details, dict) else str(signal_details),
+                account_snap,
+                risk_snap,
+                gates_json,
             ))
             db.commit()
             db.close()
@@ -181,7 +236,9 @@ class TradeExecutor:
             self._recently_traded[epic] = datetime.now()
             return None, str(e)
 
-    def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details, journal_data=None):
+    def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details,
+                   journal_data=None, account_snapshot=None, risk_snapshot=None,
+                   gates_snapshot=None, ai_raw_response=None):
         """Log a trade to the database. Checks for duplicate deal_id before insert."""
         deal_ref = result.get("dealReference", "unknown")
         deal_id = deal_ref
@@ -207,12 +264,17 @@ class TradeExecutor:
         j_condition = journal_data.get("market_condition") if journal_data else None
         # Extract alignment score from details
         alignment_score = details.get("alignment_score") if isinstance(details, dict) else None
+        # Serialize snapshots
+        acct_json = json.dumps(account_snapshot) if isinstance(account_snapshot, dict) else account_snapshot
+        risk_json = json.dumps(risk_snapshot) if isinstance(risk_snapshot, dict) else risk_snapshot
+        gates_json = json.dumps(gates_snapshot) if isinstance(gates_snapshot, dict) else gates_snapshot
         db.execute("""
             INSERT INTO trades (timestamp, epic, direction, size, entry_price,
                                 stop_loss, take_profit, deal_id, status, signal_details, source,
                                 journal_why, journal_expected_target, journal_market_condition,
-                                alignment_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?, ?)
+                                alignment_score, account_snapshot, risk_snapshot, gates_snapshot,
+                                ai_raw_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now().isoformat(),
             epic,
@@ -222,17 +284,21 @@ class TradeExecutor:
             stop_loss,
             take_profit,
             deal_id,
-            str(details),
+            json.dumps(details) if isinstance(details, dict) else str(details),
             j_why,
             j_target,
             j_condition,
             alignment_score,
+            acct_json,
+            risk_json,
+            gates_json,
+            ai_raw_response,
         ))
         db.commit()
         db.close()
         logger.info(f"Trade logged: {signal} {epic} x{size} @ {price} (alignment: {alignment_score})")
 
-    def update_trade_close(self, deal_id, exit_price, profit_loss, partial=False, epic=None):
+    def update_trade_close(self, deal_id, exit_price, profit_loss, partial=False, epic=None, exit_reason=None):
         """Update a trade record when position is closed by watchdog.
 
         Matches by deal_id first, then falls back to epic + OPEN status.
@@ -256,11 +322,13 @@ class TradeExecutor:
                         (str(round(profit_loss, 2)), epic)
                     )
             else:
+                exit_ts = datetime.now().isoformat()
                 # Try deal_id match first
                 rows = db.execute(
-                    "UPDATE trades SET exit_price = ?, exit_timestamp = ?, profit_loss = ?, status = 'CLOSED' "
+                    "UPDATE trades SET exit_price = ?, exit_timestamp = ?, profit_loss = ?, "
+                    "status = 'CLOSED', exit_reason = COALESCE(?, exit_reason) "
                     "WHERE deal_id = ? AND status = 'OPEN'",
-                    (exit_price, datetime.now().isoformat(), profit_loss, deal_id)
+                    (exit_price, exit_ts, profit_loss, exit_reason, deal_id)
                 ).rowcount
                 # Fallback: match by epic + OPEN (most recent)
                 if rows == 0 and epic:
@@ -271,9 +339,10 @@ class TradeExecutor:
                     row = cursor.fetchone()
                     if row:
                         db.execute(
-                            "UPDATE trades SET exit_price = ?, exit_timestamp = ?, profit_loss = ?, status = 'CLOSED' "
+                            "UPDATE trades SET exit_price = ?, exit_timestamp = ?, profit_loss = ?, "
+                            "status = 'CLOSED', exit_reason = COALESCE(?, exit_reason) "
                             "WHERE id = ?",
-                            (exit_price, datetime.now().isoformat(), profit_loss, row[0])
+                            (exit_price, exit_ts, profit_loss, exit_reason, row[0])
                         )
                         rows = 1
                 if rows == 0:
@@ -281,7 +350,8 @@ class TradeExecutor:
             db.commit()
             db.close()
             action = "partial update" if partial else "closed"
-            logger.info(f"Trade DB {action}: {deal_id} epic={epic} exit={exit_price} P/L={profit_loss:.2f}")
+            reason_str = f" reason={exit_reason}" if exit_reason else ""
+            logger.info(f"Trade DB {action}: {deal_id} epic={epic} exit={exit_price} P/L={profit_loss:.2f}{reason_str}")
         except Exception as e:
             logger.error(f"Failed to update trade close in DB: {e}")
 
@@ -328,7 +398,8 @@ class TradeExecutor:
                     exit_timestamp = COALESCE(?, ?),
                     profit_loss = ?,
                     deal_id = COALESCE(?, deal_id),
-                    source = 'api_reconcile'
+                    source = 'api_reconcile',
+                    exit_reason = COALESCE(exit_reason, 'server_sl_tp')
                     WHERE id = ?
                 """, (exit_ts, datetime.now().isoformat(), profit_loss, new_deal_id, trade_id))
                 reconciled += 1

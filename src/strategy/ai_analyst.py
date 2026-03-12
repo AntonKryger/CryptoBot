@@ -160,6 +160,7 @@ class AIAnalyst:
                 "sentiment": sentiment_data,
                 "ai_confidence": confidence,
                 "ai_reasoning": reasoning,
+                "ai_raw_response": result_text,
                 "ai_model": self.model,
                 "signal_strength": confidence,
                 "zone": self._get_zone(latest.get("range_position", 50)),

@@ -433,10 +433,20 @@ class CryptoBotAI:
                 )
 
                 if result:
-                    # Log to database with journal
+                    # Build comprehensive snapshots
+                    balance_info = {"balance": current_balance, "available": available, "open_positions": len(open_positions)}
+                    acct_snap, risk_snap = self.executor.build_snapshots(
+                        balance_info, len(open_positions), current_price, stop_loss, take_profit, size, signal_type)
+                    gates_snap = {"rr_ratio": rr_ratio, "risk_eur": risk_eur,
+                                  "adx": details.get("adx", 0), "open_positions": len(open_positions)}
+                    ai_raw = details.get("ai_raw_response")
+
+                    # Log to database with journal + snapshots
                     self.executor._log_trade(epic, signal_type, size, current_price,
                                              stop_loss, take_profit, result, details,
-                                             journal_data=journal_data)
+                                             journal_data=journal_data, account_snapshot=acct_snap,
+                                             risk_snapshot=risk_snap, gates_snapshot=gates_snap,
+                                             ai_raw_response=ai_raw)
                     self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
                     self.hard_rules.record_trade_opened()
                     self.position_sync.sync()  # Immediate sync after opening
@@ -570,10 +580,17 @@ class CryptoBotAI:
                 )
 
                 if result:
+                    scalper_details = {"scalper": True, "range_pos": signal.get("range_pos", 0),
+                                       "ai_reasoning": signal["reason"]}
+                    bal_info = {"balance": current_balance, "available": available}
+                    acct_snap, risk_snap = self.executor.build_snapshots(
+                        bal_info, len(open_positions), current_price, stop_loss, take_profit, size, action)
+                    gates_snap = {"rr_ratio": rr_ratio, "risk_eur": risk_eur,
+                                  "open_positions": len(open_positions), "scalper": True}
                     self.executor._log_trade(epic, action, size, current_price,
-                                             stop_loss, take_profit, result,
-                                             {"scalper": True, "range_pos": signal.get("range_pos", 0),
-                                              "ai_reasoning": signal["reason"]})
+                                             stop_loss, take_profit, result, scalper_details,
+                                             account_snapshot=acct_snap, risk_snapshot=risk_snap,
+                                             gates_snapshot=gates_snap)
                     self.hard_rules.record_trade_opened()
                     self.position_sync.sync()
 
@@ -745,9 +762,16 @@ class CryptoBotAI:
             )
 
             if result:
+                acct_snap, risk_snap = self.executor.build_snapshots(
+                    balance, open_count, current_price, stop_loss, take_profit, size, signal_type)
+                gates_snap = {"rr_ratio": c_rr, "risk_eur": risk_eur,
+                              "open_positions": open_count, "cycle_trade": True}
+                ai_raw = details.get("ai_raw_response")
                 self.executor._log_trade(epic, signal_type, size, current_price,
                                          stop_loss, take_profit, result, details,
-                                         journal_data=journal_data)
+                                         journal_data=journal_data, account_snapshot=acct_snap,
+                                         risk_snapshot=risk_snap, gates_snapshot=gates_snap,
+                                         ai_raw_response=ai_raw)
                 deal_id = result.get("dealReference") or result.get("dealId", "")
                 self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
                 self.hard_rules.record_trade_opened()
@@ -842,8 +866,15 @@ class CryptoBotAI:
                 self.watchdog.mark_scale_in_done(deal_id)
                 new_deal_id = result.get("dealReference") or result.get("dealId", "")
                 self.watchdog.track_entry(new_deal_id, epic, new_confidence, regime=regime)
+                acct_snap, risk_snap = self.executor.build_snapshots(
+                    balance, open_count, current_price, stop_loss, take_profit, scale_size, direction)
+                gates_snap = {"rr_ratio": rr_ratio, "risk_eur": risk_eur,
+                              "open_positions": open_count, "scale_in": True,
+                              "original_confidence": entry_confidence, "new_confidence": new_confidence}
                 self.executor._log_trade(epic, direction, scale_size, current_price,
-                                         stop_loss, take_profit, result, details)
+                                         stop_loss, take_profit, result, details,
+                                         account_snapshot=acct_snap, risk_snapshot=risk_snap,
+                                         gates_snapshot=gates_snap)
                 self.hard_rules.record_trade_opened()
                 self.position_sync.sync()
 
