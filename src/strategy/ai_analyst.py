@@ -194,7 +194,7 @@ class AIAnalyst:
 
             details["ai_confidence"] = confidence  # update after boost
 
-            # E3: Confluence-based confidence cap
+            # E3: Confluence check — log alignment but only cap at extreme misalignment
             if signal in ("BUY", "SELL") and confidence >= 7:
                 alignment_count = 0
                 # 1H EMA alignment
@@ -208,14 +208,17 @@ class AIAnalyst:
                     tb = regime_data.get("time_bias")
                     if (signal == "BUY" and tb == "BULLISH") or (signal == "SELL" and tb == "BEARISH"):
                         alignment_count += 1
-                # Regime
+                # Regime — allow counter-trend trades (shorting tops in uptrend IS valid)
                 regime_val = regime_data.get("regime") if regime_data else None
                 if (signal == "BUY" and regime_val in ("TRENDING_UP", "RANGING")) or \
                    (signal == "SELL" and regime_val in ("TRENDING_DOWN", "RANGING")):
                     alignment_count += 1
-                # RSI not overextended
+                # RSI supports direction (overbought = supports SELL, oversold = supports BUY)
                 rsi_val = latest.get("rsi", 50)
                 if (signal == "BUY" and rsi_val < 65) or (signal == "SELL" and rsi_val > 35):
+                    alignment_count += 1
+                # Counter-trend RSI bonus: overbought supports SHORT, oversold supports BUY
+                if (signal == "SELL" and rsi_val > 65) or (signal == "BUY" and rsi_val < 35):
                     alignment_count += 1
                 # Higher TF alignment
                 htf_data = regime_data.get("htf_context") if regime_data else None
@@ -227,16 +230,14 @@ class AIAnalyst:
                     elif htf_data.get("h4_ema_bullish") == (signal == "BUY"):
                         alignment_count += 1
 
-                if alignment_count < 2:
+                # Only cap at ZERO alignment — trust AI's judgment otherwise
+                if alignment_count == 0:
                     confidence = min(confidence, 5)
                     details["ai_confidence"] = confidence
-                    details["confluence_cap"] = f"Only {alignment_count} factors aligned, capped at 5"
-                    logger.info(f"AI {epic}: Confluence cap — only {alignment_count} aligned, conf capped to {confidence}")
-                elif alignment_count < 3:
-                    confidence = min(confidence, 7)
-                    details["ai_confidence"] = confidence
-                    if confidence < int(result.get("confidence", 0)):
-                        details["confluence_cap"] = f"{alignment_count} factors aligned, capped at 7"
+                    details["confluence_cap"] = f"Zero factors aligned, capped at 5"
+                    logger.info(f"AI {epic}: Confluence cap — 0 aligned, conf capped to {confidence}")
+                else:
+                    logger.info(f"AI {epic}: Confluence OK — {alignment_count} factors aligned")
 
             # Only trigger trade if confidence meets minimum
             if signal in ("BUY", "SELL") and confidence < self.min_confidence:
