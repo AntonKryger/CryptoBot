@@ -811,9 +811,9 @@ class CryptoBotAI:
         self.running = False
         return "🧠 <b>CryptoBot AI stopper...</b>"
 
-    def _handle_chat(self, text):
+    def _handle_chat(self, text, image_data=None):
         """Handle free-text chat messages via Telegram."""
-        return self.ai.chat(text, context_fn=self._build_chat_context)
+        return self.ai.chat(text, context_fn=self._build_chat_context, image_data=image_data)
 
     def _build_chat_context(self):
         """Gather current bot state for AI chat context."""

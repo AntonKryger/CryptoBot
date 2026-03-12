@@ -758,12 +758,13 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
             logger.error(f"Save feedback error: {e}")
             return False
 
-    def chat(self, user_message, context_fn=None):
+    def chat(self, user_message, context_fn=None, image_data=None):
         """Interactive chat with the AI trader.
 
         Args:
             user_message: Free-text message from user
             context_fn: Callable that returns current bot state dict
+            image_data: Optional base64-encoded image (from Telegram photo)
 
         Returns:
             Response string (Danish)
@@ -819,16 +820,26 @@ VIGTIGE REGLER:
 - Vær konkret, undgå vage svar
 - Hvis du ikke ved noget, sig det
 - Referer til konkrete trades og tal når muligt
+- Hvis brugeren sender et billede/chart, analyser det grundigt (trends, patterns, S/R, indikatorer)
 {feedback_text}"""
 
         # Add conversation history
         messages = list(self._conversation_history)
 
-        # Add current context + question
-        user_content = ""
+        # Build user message content (text or multimodal with image)
+        text_part = ""
         if context_text:
-            user_content += f"AKTUEL BOT STATUS:\n{context_text}\n\n"
-        user_content += f"BRUGER: {user_message}"
+            text_part += f"AKTUEL BOT STATUS:\n{context_text}\n\n"
+        text_part += f"BRUGER: {user_message}"
+
+        if image_data:
+            # Multimodal message with image
+            user_content = [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}},
+                {"type": "text", "text": text_part},
+            ]
+        else:
+            user_content = text_part
 
         messages.append({"role": "user", "content": user_content})
 

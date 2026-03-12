@@ -1,3 +1,4 @@
+import base64
 import logging
 import requests
 import threading
@@ -75,11 +76,25 @@ class TelegramNotifier:
     def _handle_update(self, update):
         """Process a single Telegram update."""
         message = update.get("message", {})
-        text = message.get("text", "")
+        text = message.get("text", "") or message.get("caption", "") or ""
         chat_id = str(message.get("chat", {}).get("id", ""))
 
         # Only respond to the configured chat
         if chat_id != self.chat_id:
+            return
+
+        # Check for photo messages
+        photos = message.get("photo", [])
+        if photos and self._chat_handler:
+            # Download the largest photo
+            image_data = self._download_photo(photos[-1]["file_id"])
+            thread = threading.Thread(
+                target=self._handle_chat_async,
+                args=(text or "Hvad ser du på dette billede?",),
+                kwargs={"image_data": image_data},
+                daemon=True,
+            )
+            thread.start()
             return
 
         if not text.startswith("/"):
@@ -109,10 +124,32 @@ class TelegramNotifier:
         else:
             self.send(f"Ukendt kommando: {command}\nBrug /help for at se kommandoer.")
 
-    def _handle_chat_async(self, text):
+    def _download_photo(self, file_id):
+        """Download a photo from Telegram and return base64-encoded data."""
+        try:
+            # Get file path
+            resp = requests.get(f"{self.base_url}/getFile", params={"file_id": file_id}, timeout=10)
+            if resp.status_code != 200:
+                return None
+            file_path = resp.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                return None
+
+            # Download file
+            file_url = f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            file_resp = requests.get(file_url, timeout=15)
+            if file_resp.status_code != 200:
+                return None
+
+            return base64.b64encode(file_resp.content).decode("utf-8")
+        except Exception as e:
+            logger.error(f"Photo download failed: {e}")
+            return None
+
+    def _handle_chat_async(self, text, image_data=None):
         """Handle free-text chat in a background thread."""
         try:
-            response = self._chat_handler(text)
+            response = self._chat_handler(text, image_data=image_data)
             if response:
                 # Split long responses for Telegram's 4096 char limit
                 if len(response) > 4000:
