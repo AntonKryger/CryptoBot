@@ -1,15 +1,34 @@
 # CryptoBot — Skill & Working Guidelines
 
 ## Projekt
-Automatiseret crypto CFD trading bot paa Capital.com. To bots: rule-based (main.py) og AI-powered (main_ai.py).
+Automatiseret crypto CFD trading bot paa Capital.com. Multi-bot arkitektur med fuld isolation pr. bot.
 Deployed via Docker paa Hetzner VPS (91.98.26.70).
 
 ## Arkitektur
-- Rule bot: `main.py` + `config.yaml`
-- AI bot: `main_ai.py` + `config_ai.yaml`
-- Demo bot: `main.py` + `config_demo.yaml`
-- Dashboard: `dashboard.py` -> `src/dashboard/`
-- Shared: `src/strategy/`, `src/risk/`, `src/executor/`, `src/api/`
+- Entry points: `main.py` (rule/scalper bots), `main_ai.py` (AI bots)
+- Shared kode: `src/strategy/`, `src/risk/`, `src/executor/`, `src/api/`
+- Dashboard: `dashboard.py` -> `src/dashboard/` (auto-discovers bot DBs via `BOT_DATA_DIR`)
+- Hver bot = 1 Docker service + 1 config fil + egne data/logs volumes
+
+## Multi-Bot Navneskema
+`{TYPE}{MODE}{NUMMER}` — f.eks. RL1, AD1, SD1
+| Kode | Betydning |
+|------|-----------|
+| RL1 | Rule Live 1 |
+| RD1 | Rule Demo 1 |
+| AL1 | AI Live 1 |
+| AD1 | AI Demo 1 |
+| SL1 | Scalper Live 1 |
+| SD1 | Scalper Demo 1 |
+
+Bot ID bruges i: config-filnavn (`config_rl1.yaml`), Docker service/container, data-mappe (`data_rl1/`), log-mappe (`logs_rl1/`), log-prefix `[RL1]`, dashboard.
+
+## Docker-struktur
+- YAML anchors: `x-bot-common` for faelles settings
+- Host config `config_{id}.yaml` mountes som `/app/config.yaml` i containeren
+- Data: `./data_{id}:/app/data`, Logs: `./logs_{id}:/app/logs`
+- Dashboard: bot data mountes read-only under `/app/bot_data/{id}/`
+- Tilfoej ny bot: kopier service-blok, aendr 3 linjer (id, config, volumes)
 
 ## ARBEJDSREGLER (KRITISKE)
 
@@ -44,7 +63,15 @@ cd /root/cryptobot && git pull origin master
 docker compose down && docker compose up -d --build
 ```
 
-### 6. Koordinering med platform/
+### 6. Tilfoej ny bot
+1. Opret Capital.com konto, navngiv efter bot ID
+2. Kopier `config.example.yaml` til `config_{id}.yaml` paa VPS
+3. Udfyld credentials og `bot:` sektion (id, name, type)
+4. Tilfoej service-blok i `docker-compose.yml` (copy-paste, aendr id)
+5. Tilfoej volume-mount til dashboard service
+6. `docker compose up -d --build`
+
+### 7. Koordinering med platform/
 SaaS-platformen bygges i `platform/` med sin egen `SKILL.md`.
 Begge instanser laaser DENNE fil og `platform/SKILL.md`.
 Step 11 (PlatformSync i `src/platform/`) er overlap-punktet — koordiner via changelog.
@@ -69,6 +96,19 @@ Step 11 (PlatformSync i `src/platform/`) er overlap-punktet — koordiner via ch
   - Chat system prompt: maks 150 ord, maks 2 emojis, ingen headers, ingen gentagelser
   - max_tokens reduceret 800 -> 400
   - Problem: AI brugte 90% af tokens paa emojis og selvros
+
+- **AI analyse-prompt overhalet** (commits f8c0b0f, 5e289f6)
+  - AEndret: `src/strategy/ai_analyst.py` — SYSTEM_PROMPT
+  - Ny 5-checkpoint scoring: trend/regime, momentum, price action, sentiment, R:R
+  - Haiku SKAL eksplicit besvare alle 5 checkpoints foer signal
+  - Scoring: 5/5=conf 9-10, 4/5=conf 7-8, <4=HOLD
+  - Ranging markets kraever range_pos < 20% eller > 80% (var: "trade with confidence")
+  - Resultat: ETHUSD HOLD(4) trods ADX 29 — foer ville den have sagt BUY(7+)
+
+- **Chat history strammet**
+  - Vindue reduceret fra 24h til 4h (forhindrer moenster-forurening)
+  - Max exchanges 50 -> 10, max tokens 80k -> 20k
+  - Forhindrer at "jeg lover at pause" + "handler alligevel" moenster akkumulerer
 
 - **Tidligere fixes (samme dag)**
   - Telegram HTML parse fix (commit 1baa163)

@@ -1,42 +1,44 @@
+x-bot-common: &bot-common
+  build: .
+  restart: always
+
 services:
-  cryptobot:
-    build: .
-    container_name: cryptobot
-    restart: always
-    command: ["python", "-u", "main.py"]
+  rl1:
+    <<: *bot-common
+    container_name: cryptobot-rl1
+    command: ["python", "-u", "main.py", "--config", "config.yaml"]
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ./config_rl1.yaml:/app/config.yaml:ro
+      - ./data_rl1:/app/data
+      - ./logs_rl1:/app/logs
 
-  cryptobot-ai:
-    build: .
-    container_name: cryptobot-ai
-    restart: always
-    command: ["python", "-u", "main_ai.py"]
+  rd1:
+    <<: *bot-common
+    container_name: cryptobot-rd1
+    command: ["python", "-u", "main.py", "--config", "config.yaml"]
     volumes:
-      - ./config_ai.yaml:/app/config_ai.yaml:ro
-      - ./data_ai:/app/data
-      - ./logs_ai:/app/logs
+      - ./config_rd1.yaml:/app/config.yaml:ro
+      - ./data_rd1:/app/data
+      - ./logs_rd1:/app/logs
 
-  cryptobot-demo:
-    build: .
-    container_name: cryptobot-demo
-    restart: always
-    command: ["python", "-u", "main.py", "--config", "config_demo.yaml"]
+  ad1:
+    <<: *bot-common
+    container_name: cryptobot-ad1
+    command: ["python", "-u", "main_ai.py", "--config", "config.yaml"]
     volumes:
-      - ./config_demo.yaml:/app/config_demo.yaml:ro
-      - ./data_demo:/app/data
-      - ./logs_demo:/app/logs
+      - ./config_ad1.yaml:/app/config.yaml:ro
+      - ./data_ad1:/app/data
+      - ./logs_ad1:/app/logs
 
-  cryptobot-dashboard:
-    build: .
+  dashboard:
+    <<: *bot-common
     container_name: cryptobot-dashboard
-    restart: always
     command: ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "30", "dashboard:app"]
     ports:
       - "127.0.0.1:5000:5000"
+    environment:
+      - BOT_DATA_DIR=/app/bot_data
     volumes:
-      - ./data:/app/data:ro
-      - ./data_ai:/app/data_ai:ro
-      - ./data_demo:/app/data_demo:ro
+      - ./data_rl1:/app/bot_data/rl1:ro
+      - ./data_rd1:/app/bot_data/rd1:ro
+      - ./data_ad1:/app/bot_data/ad1:ro

@@ -1,5 +1,11 @@
 # CryptoBot Configuration
-# Copy to config.yaml (rule/live bot) or config_ai.yaml (AI bot)
+# Copy to config_{bot_id}.yaml (e.g. config_rl1.yaml, config_ad1.yaml)
+
+# Bot identity
+bot:
+  id: "RD1"                    # Short ID: RL1, RD1, AL1, AD1, SL1, SD1
+  name: "Rule Demo 01"         # Human-readable name
+  type: "rule"                 # rule | ai | scalper
 
 # Capital.com API
 capital:

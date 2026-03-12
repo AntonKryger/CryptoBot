@@ -31,16 +31,19 @@ from src.executor.positions_sync import PositionSync
 from src.analysis.weekly_evaluator import WeeklyEvaluator
 from src.strategy.range_scalper import RangeScalper
 
-# ── Logging setup ───────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/cryptobot_ai.log", encoding="utf-8"),
-    ],
-)
 logger = logging.getLogger("CryptoBot-AI")
+
+
+def setup_logging(bot_id="AI"):
+    """Configure logging with bot-specific prefix and log file."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [{bot_id}] [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(f"logs/cryptobot_{bot_id.lower()}.log", encoding="utf-8"),
+        ],
+    )
 
 
 class CryptoBotAI:
@@ -1282,7 +1285,16 @@ class CryptoBotAI:
 
 
 def main():
-    bot = CryptoBotAI(config_path="config_ai.yaml")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config_ai.yaml", help="Path to config file")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    bot_id = config.get("bot", {}).get("id", "AI")
+    setup_logging(bot_id)
+
+    bot = CryptoBotAI(config_path=args.config)
 
     def signal_handler(sig, frame):
         bot.stop()

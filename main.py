@@ -21,16 +21,19 @@ from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
 
-# -- Logging setup --
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/cryptobot.log", encoding="utf-8"),
-    ],
-)
 logger = logging.getLogger("CryptoBot")
+
+
+def setup_logging(bot_id="RULE"):
+    """Configure logging with bot-specific prefix and log file."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [{bot_id}] [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(f"logs/cryptobot_{bot_id.lower()}.log", encoding="utf-8"),
+        ],
+    )
 
 
 class CryptoBot:
@@ -739,6 +742,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None, help="Path to config file")
     args = parser.parse_args()
+
+    config = load_config(args.config)
+    bot_id = config.get("bot", {}).get("id", "RULE")
+    setup_logging(bot_id)
+
     bot = CryptoBot(config_path=args.config)
 
     # Handle Ctrl+C gracefully
