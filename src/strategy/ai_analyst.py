@@ -6,64 +6,60 @@ and make intelligent trading decisions.
 import json
 import logging
 import os
+import sqlite3
 import time
 from datetime import datetime
 
 import anthropic
 
+from src.strategy.chart_analysis import ChartAnalysis
+
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an aggressive crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
+# Will be set by main_ai.py
+_news_monitor = None
 
-YOUR GOAL: Deploy capital actively. The account has 6 coins and should typically have 3-5 positions open. Sitting in cash earns nothing. Find the BEST setups and TRADE them.
+SYSTEM_PROMPT = """You are a disciplined crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
+
+YOUR GOAL: Deploy capital into HIGH-QUALITY setups. 3-5 positions open is ideal. Quality > quantity.
 
 CORE PRINCIPLES:
-1. Trade WITH the trend — trend is your friend
+1. Trade WITH the trend — the daily and 4H trend is your compass
 2. SHORT as readily as you BUY — crypto drops fast, shorts are profitable
-3. Use the full capital — having 90% in cash is a failure
-4. Spot PATTERNS — if a coin drops every evening, SHORT it in the evening
+3. Use the TIME-OF-DAY BIAS data provided — it is calculated from actual returns, not guesswork
+4. DO NOT chase exhausted moves — if a coin already moved 3%+ in one direction in 12h, the easy money is gone. Require a new catalyst or setup.
+5. A reversal is NOT automatic — a 2% pullback after a 5% move is usually a pause, not a reversal. Require strong confirmation.
 
-PATTERN RECOGNITION (your edge):
-- Look at the last 6 candles: is there a clear direction? Trade it.
-- Evening/night sessions (UTC 18-06): crypto often sells off. Favor SELL positions.
-- Morning sessions (UTC 06-14): recovery rallies common. Favor BUY positions.
-- If ROC-6 > 1%: strong uptrend momentum, BUY on any dip
-- If ROC-6 < -1%: strong downtrend momentum, SELL on any bounce
-- Use time-of-day bias data: if the hour is historically bearish, SHORT.
+MULTI-TIMEFRAME RULES (CRITICAL):
+- Trade ONLY in the direction of the DAILY trend unless the 1H setup is exceptional (confidence >= 9)
+- If 4H and Daily both trend the same direction: strong signal, confidence +1
+- If 4H and Daily conflict: reduce confidence, be cautious
+- Counter-trend trades against the daily trend need confidence >= 8
 
 STRATEGY:
-- TRENDING UP (EMA 9 > EMA 21): BUY. Even in the middle of the range.
-- TRENDING DOWN (EMA 9 < EMA 21): SELL. Even in the middle of the range.
-- RANGING (ADX < 20): Mean-reversion at extremes (range_pos < 25% = BUY, > 75% = SELL).
-- STRONG MOMENTUM (ROC-6 > 1.5% or < -1.5%): Trade the momentum direction regardless of range position.
+- TRENDING UP (EMA 9 > EMA 21 on 1H AND higher TFs confirm): BUY on pullbacks
+- TRENDING DOWN (EMA 9 < EMA 21 on 1H AND higher TFs confirm): SELL on rallies
+- RANGING (ADX < 20): Mean-reversion at extremes (range_pos < 25% = BUY, > 75% = SELL)
+- STRONG MOMENTUM (ROC-6 > 1.5% or < -1.5%): Trade momentum IF aligned with daily trend
 
 ENTRY RULES:
-1. TREND: EMA 9 > EMA 21 for BUY, < for SELL. Counter-trend only in RANGING regime at extremes.
-2. MOMENTUM: ROC-3 should align. But if ROC-6 is strong (>1%), allow entry even with slight ROC-3 retracement.
-3. RSI: Don't buy if RSI > 70. Don't sell if RSI < 30. Otherwise it's fine.
-4. VOLUME: Above-average volume confirms the move. Not required for trend entries.
+1. TREND: EMA 9/21 alignment on 1H. Higher TF confirmation preferred.
+2. MOMENTUM: ROC-3 should align. If ROC-6 is strong (>1%), allow slight ROC-3 retracement.
+3. RSI: Don't buy if RSI > 70. Don't sell if RSI < 30. RSI 40-60 is ideal entry zone.
+4. VOLUME: Above-average volume confirms. Not required for trend entries.
+5. EXHAUSTION: If price moved 3%+ in 12h, require fresh catalyst (new support bounce, volume spike, trend reversal on lower TF).
 
-CONFIDENCE SCORING (be generous with good setups):
-- 6: Marginal setup, only 2-3 confirmations. Will get small position.
-- 7: Decent setup, trend + momentum aligned. Gets moderate position.
-- 8: Strong setup, 4+ confirmations. Gets large position.
-- 9-10: Exceptional — everything aligned, strong momentum, historical pattern confirms. Gets full position.
-- If trend + momentum + session bias all align: give at least 8.
-
-DIRECTION BALANCE:
-- Check your stats: if you're >70% long, actively look for SHORT setups.
-- Falling prices with negative ROC = SHORT opportunity, NOT a "dip to buy."
-- Evening hours with bearish bias = prime SHORT territory.
+CONFIDENCE SCORING:
+- 7: Minimum for any trade. Trend + momentum aligned. Moderate position.
+- 8: Required for counter-trend trades. 4+ confirmations. Large position.
+- 9-10: Exceptional — all timeframes aligned, strong momentum, pattern confirms. Full position.
+- Below 7: HOLD. Marginal setups lose money.
 
 WHEN TO HOLD:
-- Truly conflicting signals (bullish EMA but strong bearish momentum)
+- Conflicting signals across timeframes
 - No clear trend AND no range extreme AND no momentum
+- Price exhausted (big move already happened, no fresh setup)
 - ADX 15-20 with flat EMAs (choppy market)
-
-DO NOT hold when:
-- There's a clear trend direction (even if moderate confidence)
-- Momentum is strong in one direction
-- Time-of-day bias strongly favors one direction
 
 Respond ONLY with valid JSON:
 {"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
@@ -86,7 +82,14 @@ class AIAnalyst:
         self._last_request = 0
         self._request_delay = 1.0  # seconds between API calls
         self.trade_executor = None  # Set by main_ai.py for recent P/L feedback
+        self.news_monitor = None    # Set by main_ai.py for breaking news
         self.rule_db_path = ai_cfg.get("rule_db_path", "data/trades.db")  # Rule bot DB for cross-learning
+
+        # Chat conversation state
+        self._conversation_history = []  # [{role, content}] - capped at 20
+        self._max_history = 20
+        self._feedback_db_path = config.get("database", {}).get("path", "data_ai/trades.db")
+        self._init_feedback_table()
 
         logger.info(f"AI Analyst initialized (model: {self.model}, min_confidence: {self.min_confidence})")
 
@@ -169,6 +172,50 @@ class AIAnalyst:
                     logger.info(f"AI {epic}: Rule-bot leaning {signal} (score={rule_score}), confidence +1 to {confidence}")
 
             details["ai_confidence"] = confidence  # update after boost
+
+            # E3: Confluence-based confidence cap
+            if signal in ("BUY", "SELL") and confidence >= 7:
+                alignment_count = 0
+                # 1H EMA alignment
+                ema_fast_val = latest.get("ema_9", latest.get("close"))
+                ema_slow_val = latest.get("ema_21", latest.get("close"))
+                if (signal == "BUY" and ema_fast_val > ema_slow_val) or \
+                   (signal == "SELL" and ema_fast_val < ema_slow_val):
+                    alignment_count += 1
+                # Time bias
+                if regime_data:
+                    tb = regime_data.get("time_bias")
+                    if (signal == "BUY" and tb == "BULLISH") or (signal == "SELL" and tb == "BEARISH"):
+                        alignment_count += 1
+                # Regime
+                regime_val = regime_data.get("regime") if regime_data else None
+                if (signal == "BUY" and regime_val in ("TRENDING_UP", "RANGING")) or \
+                   (signal == "SELL" and regime_val in ("TRENDING_DOWN", "RANGING")):
+                    alignment_count += 1
+                # RSI not overextended
+                rsi_val = latest.get("rsi", 50)
+                if (signal == "BUY" and rsi_val < 65) or (signal == "SELL" and rsi_val > 35):
+                    alignment_count += 1
+                # Higher TF alignment
+                htf_data = regime_data.get("htf_context") if regime_data else None
+                if htf_data:
+                    htf_align = htf_data.get("trend_alignment", "")
+                    if (signal == "BUY" and htf_align == "ALIGNED_UP") or \
+                       (signal == "SELL" and htf_align == "ALIGNED_DOWN"):
+                        alignment_count += 1
+                    elif htf_data.get("h4_ema_bullish") == (signal == "BUY"):
+                        alignment_count += 1
+
+                if alignment_count < 2:
+                    confidence = min(confidence, 5)
+                    details["ai_confidence"] = confidence
+                    details["confluence_cap"] = f"Only {alignment_count} factors aligned, capped at 5"
+                    logger.info(f"AI {epic}: Confluence cap — only {alignment_count} aligned, conf capped to {confidence}")
+                elif alignment_count < 3:
+                    confidence = min(confidence, 7)
+                    details["ai_confidence"] = confidence
+                    if confidence < int(result.get("confidence", 0)):
+                        details["confluence_cap"] = f"{alignment_count} factors aligned, capped at 7"
 
             # Only trigger trade if confidence meets minimum
             if signal in ("BUY", "SELL") and confidence < self.min_confidence:
@@ -366,6 +413,36 @@ MARKET REGIME: {regime} (ADX: {adx:.1f})
         else:
             prompt += "\nMARKET REGIME: Not available\n"
 
+        # Add higher-timeframe context
+        htf = regime_data.get("htf_context") if regime_data else None
+        if htf:
+            prompt += f"""
+HIGHER TIMEFRAME CONTEXT (CRITICAL - trade WITH these trends):
+- 4H Trend: {htf.get('h4_trend', 'N/A')} (RSI: {htf.get('h4_rsi', 'N/A')}, EMA: {'bullish' if htf.get('h4_ema_bullish') else 'bearish'})
+- Daily Trend: {htf.get('daily_trend', 'N/A')} (RSI: {htf.get('daily_rsi', 'N/A')})
+- Alignment: {htf.get('trend_alignment', 'N/A')}
+- Daily Support: {htf.get('daily_support', 'N/A')}
+- Daily Resistance: {htf.get('daily_resistance', 'N/A')}
+"""
+            alignment = htf.get("trend_alignment", "")
+            if alignment == "ALIGNED_UP":
+                prompt += "→ Both higher TFs bullish. FAVOR BUY. SHORT needs conf >= 9.\n"
+            elif alignment == "ALIGNED_DOWN":
+                prompt += "→ Both higher TFs bearish. FAVOR SELL. BUY needs conf >= 9.\n"
+            elif alignment == "CONFLICTING":
+                prompt += "→ Higher TFs conflict. Be cautious. Only trade with strong 1H confirmation.\n"
+        else:
+            prompt += "\nHIGHER TIMEFRAME CONTEXT: Not available\n"
+
+        # Add chart analysis (Fibonacci, S/R zones, patterns)
+        try:
+            chart = ChartAnalysis.get_full_analysis(df)
+            chart_text = ChartAnalysis.format_for_prompt(chart)
+            if chart_text:
+                prompt += f"\n{chart_text}\n"
+        except Exception as e:
+            logger.debug(f"Chart analysis failed for {epic}: {e}")
+
         # Add time-of-day bias if available in details
         time_bias = None
         time_bias_return = 0
@@ -407,6 +484,23 @@ NEWS SENTIMENT (SUPPLEMENTARY - require 3+ technical confirmations):
                 prompt += f"\n- Top bearish headline: {sentiment_data['top_bearish'][0][:80]}"
         else:
             prompt += "\nNEWS SENTIMENT: No data available"
+
+        # Add breaking news and market context
+        if self.news_monitor:
+            try:
+                market_ctx = self.news_monitor.get_market_context()
+                if market_ctx:
+                    prompt += f"\n{market_ctx}"
+
+                breaking = self.news_monitor.get_breaking_news(epic)
+                if breaking:
+                    prompt += "\nBREAKING NEWS (hot in last hour):\n"
+                    for item in breaking[:3]:
+                        votes = item.get("votes", {})
+                        vote_str = f"+{votes.get('positive', 0)}/-{votes.get('negative', 0)}"
+                        prompt += f"  - {item['title'][:80]} ({vote_str})\n"
+            except Exception as e:
+                logger.debug(f"News context failed: {e}")
 
         # Add rule-based bot's signal for collaboration
         if rule_signal:
@@ -517,6 +611,13 @@ RULE-BASED BOT SIGNAL:
             except Exception as e:
                 logger.debug(f"Trade feedback error: {e}")
 
+        # Inject user feedback/training rules
+        user_feedback = self._load_user_feedback(limit=5)
+        if user_feedback:
+            prompt += "\n\nUSER GUIDANCE (the trader gave you these rules - FOLLOW THEM):\n"
+            for fb in user_feedback:
+                prompt += f"- {fb['feedback']}\n"
+
         prompt += "\n\nBased on ALL the above data, what is your recommendation? Return JSON only."
         return prompt
 
@@ -601,3 +702,223 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
             return f"Fejl ved rapport: {e}"
+
+    # ── Feedback & Chat System ────────────────────────────────────
+
+    def _init_feedback_table(self):
+        """Create user_feedback table in the trades DB for storing user guidance."""
+        try:
+            db_dir = os.path.dirname(self._feedback_db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+
+            conn = sqlite3.connect(self._feedback_db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    category TEXT DEFAULT 'general',
+                    feedback TEXT NOT NULL,
+                    active INTEGER DEFAULT 1
+                )
+            """)
+            conn.commit()
+            conn.close()
+            logger.info("Feedback table initialized")
+        except Exception as e:
+            logger.error(f"Failed to init feedback table: {e}")
+
+    def _load_user_feedback(self, limit=10):
+        """Load active user feedback for injection into trading prompts."""
+        try:
+            conn = sqlite3.connect(self._feedback_db_path)
+            rows = conn.execute(
+                "SELECT category, feedback FROM user_feedback WHERE active = 1 ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            conn.close()
+            return [{"category": r[0], "feedback": r[1]} for r in rows]
+        except Exception as e:
+            logger.debug(f"Load feedback error: {e}")
+            return []
+
+    def _save_feedback(self, feedback_text, category="general"):
+        """Save user feedback to the database."""
+        try:
+            conn = sqlite3.connect(self._feedback_db_path)
+            conn.execute(
+                "INSERT INTO user_feedback (timestamp, category, feedback) VALUES (?, ?, ?)",
+                (datetime.now().isoformat(), category, feedback_text)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Saved user feedback: {feedback_text[:50]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Save feedback error: {e}")
+            return False
+
+    def chat(self, user_message, context_fn=None):
+        """Interactive chat with the AI trader.
+
+        Args:
+            user_message: Free-text message from user
+            context_fn: Callable that returns current bot state dict
+
+        Returns:
+            Response string (Danish)
+        """
+        # Check for feedback/training commands
+        lower_msg = user_message.strip().lower()
+        if lower_msg.startswith("husk:") or lower_msg.startswith("remember:"):
+            feedback = user_message.split(":", 1)[1].strip()
+            if self._save_feedback(feedback, category="trading_rule"):
+                return f"Noteret! Jeg husker: \"{feedback}\"\n\nDette vil pavirke mine fremtidige handelsbeslutninger."
+            return "Fejl ved at gemme feedback."
+
+        if lower_msg.startswith("glem:") or lower_msg.startswith("forget:"):
+            keyword = user_message.split(":", 1)[1].strip()
+            return self._forget_feedback(keyword)
+
+        if lower_msg in ("feedback", "regler", "rules"):
+            return self._list_feedback()
+
+        # Build context
+        context_text = ""
+        if context_fn:
+            try:
+                ctx = context_fn()
+                context_text = self._format_chat_context(ctx)
+            except Exception as e:
+                logger.error(f"Context fn error: {e}")
+
+        # Load user feedback for personality
+        feedback_items = self._load_user_feedback()
+        feedback_text = ""
+        if feedback_items:
+            feedback_text = "\n\nUSER GUIDANCE (follow these rules):\n"
+            for fb in feedback_items:
+                feedback_text += f"- [{fb['category']}] {fb['feedback']}\n"
+
+        chat_system = f"""Du er en erfaren krypto-CFD-trader der styrer en automatiseret handelsbot.
+Du taler dansk. Du er direkte, ærlig og forklarer dine beslutninger klart.
+
+DIN ROLLE:
+- Forklar dine handelsbeslutninger og analyse
+- Accepter feedback fra brugeren og lær af det
+- Vær ærlig om fejl og tabende handler
+- Del din markedsopfattelse og strategi
+- Hjælp brugeren med at forstå teknisk analyse
+
+Brugeren kan give dig feedback med "husk: ..." for at gemme regler du skal følge.
+Brugeren kan skrive "regler" for at se aktive feedback-regler.
+
+VIGTIGE REGLER:
+- Svar ALTID på dansk
+- Hold svar under 600 ord
+- Vær konkret, undgå vage svar
+- Hvis du ikke ved noget, sig det
+- Referer til konkrete trades og tal når muligt
+{feedback_text}"""
+
+        # Add conversation history
+        messages = list(self._conversation_history)
+
+        # Add current context + question
+        user_content = ""
+        if context_text:
+            user_content += f"AKTUEL BOT STATUS:\n{context_text}\n\n"
+        user_content += f"BRUGER: {user_message}"
+
+        messages.append({"role": "user", "content": user_content})
+
+        try:
+            self._rate_limit()
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=800,
+                system=chat_system,
+                messages=messages,
+            )
+
+            reply = response.content[0].text.strip()
+
+            # Update conversation history (capped)
+            self._conversation_history.append({"role": "user", "content": user_message})
+            self._conversation_history.append({"role": "assistant", "content": reply})
+            if len(self._conversation_history) > self._max_history:
+                self._conversation_history = self._conversation_history[-self._max_history:]
+
+            return reply
+
+        except Exception as e:
+            logger.error(f"Chat error: {e}")
+            return f"Fejl i chat: {e}"
+
+    def _format_chat_context(self, ctx):
+        """Format bot state dict into readable text for chat."""
+        lines = []
+        if ctx.get("balance"):
+            lines.append(f"Balance: EUR {ctx['balance']:.2f}")
+        if ctx.get("available"):
+            lines.append(f"Tilgængelig: EUR {ctx['available']:.2f}")
+        if ctx.get("daily_pl") is not None:
+            lines.append(f"Daglig P/L: EUR {ctx['daily_pl']:+.2f}")
+
+        positions = ctx.get("positions", [])
+        if positions:
+            lines.append(f"\nÅbne positioner ({len(positions)}):")
+            for p in positions:
+                emoji = "🟢" if p["direction"] == "BUY" else "🔴"
+                lines.append(f"  {emoji} {p['epic']} {p['direction']} P/L: EUR {p.get('profit', 0):+.2f} (hold: {p.get('hold_hours', '?')}t)")
+        else:
+            lines.append("Ingen åbne positioner")
+
+        regimes = ctx.get("regimes", {})
+        if regimes:
+            lines.append("\nMarkedsregimer:")
+            for epic, data in regimes.items():
+                lines.append(f"  {epic}: {data['regime']} (ADX: {data['adx']:.0f})")
+
+        recent = ctx.get("recent_trades", [])
+        if recent:
+            lines.append(f"\nSeneste handler:")
+            for t in recent[:5]:
+                emoji = "✅" if (t.get("profit_loss") or 0) >= 0 else "❌"
+                lines.append(f"  {emoji} {t['epic']} {t['direction']} P/L: EUR {t.get('profit_loss', 0):+.2f}")
+
+        stats = ctx.get("stats", {})
+        if stats:
+            lines.append(f"\nStatistik: {stats.get('total_trades', 0)} trades, win rate: {stats.get('win_rate', 0)}%, total P/L: EUR {stats.get('total_pl', 0):+.2f}")
+
+        return "\n".join(lines)
+
+    def _forget_feedback(self, keyword):
+        """Deactivate feedback matching keyword."""
+        try:
+            conn = sqlite3.connect(self._feedback_db_path)
+            rows = conn.execute(
+                "SELECT id, feedback FROM user_feedback WHERE active = 1 AND feedback LIKE ?",
+                (f"%{keyword}%",)
+            ).fetchall()
+            if not rows:
+                conn.close()
+                return f"Ingen aktive regler matcher '{keyword}'."
+            for row in rows:
+                conn.execute("UPDATE user_feedback SET active = 0 WHERE id = ?", (row[0],))
+            conn.commit()
+            conn.close()
+            return f"Glemt {len(rows)} regel(er) der matchede '{keyword}'."
+        except Exception as e:
+            return f"Fejl: {e}"
+
+    def _list_feedback(self):
+        """List all active feedback rules."""
+        items = self._load_user_feedback(limit=20)
+        if not items:
+            return "Ingen aktive regler. Brug 'husk: ...' for at tilføje."
+        msg = "📋 Aktive regler:\n\n"
+        for i, fb in enumerate(items, 1):
+            msg += f"{i}. [{fb['category']}] {fb['feedback']}\n"
+        msg += "\nBrug 'glem: <søgeord>' for at fjerne en regel."
+        return msg

@@ -13,6 +13,8 @@ from src.api.capital_client import CapitalClient
 from src.strategy.signals import SignalEngine
 from src.strategy.regime_detector import RegimeDetector
 from src.strategy.time_bias import TimeBias
+from src.strategy.multi_timeframe import MultiTimeframeAnalyzer
+from src.strategy.news_monitor import NewsMonitor
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
@@ -41,14 +43,19 @@ class CryptoBot:
         self.signals = SignalEngine(self.config)
         self.regime = RegimeDetector(self.client, self.config)
         self.time_bias = TimeBias(self.client)
+        self.mtf = MultiTimeframeAnalyzer(self.client)
+        self.news = NewsMonitor(self.config)
         self.signals.regime_detector = self.regime
         self.signals.time_bias = self.time_bias
+        self.signals.mtf = self.mtf
+        self.signals.news_monitor = self.news
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
         self.watchdog = PositionWatchdog(self.client, self.risk, self.notifier, self.config)
         self.watchdog.executor = self.executor  # For cooldown tracking
         self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
+        self.watchdog.mtf = self.mtf  # For daily trend context in exits
         self.watchdog._cycle_callback = self._handle_cycle_trade  # Grid-style cycle trading
         self.reporter = Reporter(self.config)
 
@@ -260,13 +267,17 @@ class CryptoBot:
                     self.executor._log_trade(epic, signal_type, size, current_price,
                                              stop_loss, take_profit, result, details)
                     self.executor._recently_traded[epic] = datetime.now()
+                    # Track in watchdog for trend-aware exit
+                    deal_id = result.get("dealReference") or result.get("dealId", "")
+                    regime = details.get("regime", "")
+                    self.watchdog.track_entry(deal_id, epic, regime=regime)
                     self.notifier.notify_trade(signal_type, epic, size, current_price,
                                                stop_loss, take_profit, details)
 
             except Exception as e:
                 logger.error(f"Trade execution failed for {epic}: {e}")
 
-    def _handle_cycle_trade(self, epic, suggested_direction):
+    def _handle_cycle_trade(self, epic, suggested_direction, closed_pl_pct=0):
         """Grid-style cycle trading: after watchdog closes a position, check for reversal."""
         try:
             prices = self.client.get_prices(epic, resolution=self.timeframe)
@@ -282,9 +293,27 @@ class CryptoBot:
                 return
 
             strength = details.get("signal_strength", 0)
-            if strength < 5:  # Need at least moderate signal
-                logger.info(f"[Cycle] {epic}: Signal too weak ({strength}) -- skip")
+            if strength < 7:  # Need strong signal for cycle trades
+                logger.info(f"[Cycle] {epic}: Signal too weak ({strength} < 7) -- skip")
                 return
+
+            # Exhaustion check: if closed position had >3% profit, require very strong signal for reversal
+            if closed_pl_pct > 3.0 and strength < 9:
+                logger.info(f"[Cycle] {epic}: Exhaustion guard - closed P/L was +{closed_pl_pct:.1f}%, need strength >= 9 (got {strength})")
+                return
+
+            # Time-of-day filter: block counter-bias cycle trades
+            if self.time_bias:
+                try:
+                    bias, avg_ret, _ = self.time_bias.get_bias(epic)
+                    if signal_type == "BUY" and bias == "BEARISH" and avg_ret < -0.05:
+                        logger.warning(f"[Cycle] {epic}: BUY blocked - bearish hour (avg {avg_ret:+.3f}%)")
+                        return
+                    if signal_type == "SELL" and bias == "BULLISH" and avg_ret > 0.05:
+                        logger.warning(f"[Cycle] {epic}: SELL blocked - bullish hour (avg {avg_ret:+.3f}%)")
+                        return
+                except Exception:
+                    pass
 
             confidence = self.risk.map_rule_score_to_confidence(strength)
 
@@ -315,7 +344,8 @@ class CryptoBot:
                                          stop_loss, take_profit, result, details)
                 self.executor._recently_traded[epic] = datetime.now()
                 deal_id = result.get("dealReference") or result.get("dealId", "")
-                self.watchdog.track_entry(deal_id, epic)
+                regime = details.get("regime", "")
+                self.watchdog.track_entry(deal_id, epic, regime=regime)
 
                 signal_mode = details.get("signal_type", "RANGE")
                 self.notifier.send(

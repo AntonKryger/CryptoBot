@@ -46,6 +46,7 @@ class PositionWatchdog:
         self._breakeven_set = set()    # deal_ids where stop moved to break-even
         self._entry_times = {}         # {deal_id: datetime} - for max hold time
         self._iteration_count = 0      # for periodic tasks
+        self._position_regimes = {}    # {deal_id: regime} - regime at entry
 
         # Early exit state
         self._candle_cache = {}        # {epic: {"candles": [...], "timestamp": float}}
@@ -64,8 +65,8 @@ class PositionWatchdog:
         self.progressive_sl_trail = watchdog_cfg.get("progressive_sl_trail_pct", 1.0)
 
         # Profit pullback close - actively close when giving back profit
-        self.pullback_peak_trigger = watchdog_cfg.get("pullback_peak_trigger_pct", 1.5)
-        self.pullback_close_pct = watchdog_cfg.get("pullback_close_pct", 0.75)
+        self.pullback_peak_trigger = watchdog_cfg.get("pullback_peak_trigger_pct", 2.5)
+        self.pullback_close_pct = watchdog_cfg.get("pullback_close_pct", 0.75)  # fallback only
 
         # Scale-in state
         self._scale_in_done = set()    # deal_ids that already got scale-in
@@ -77,11 +78,12 @@ class PositionWatchdog:
         self.signal_engine = None
         self.executor = None  # For cooldown tracking
         self.time_bias = None  # For sentiment-based night mode
+        self.mtf = None  # MultiTimeframeAnalyzer for daily trend context
 
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
             f"breakeven={self.breakeven_trigger_pct}%, "
-            f"pullback_close=peak>{self.pullback_peak_trigger}%+drop>{self.pullback_close_pct}%, "
+            f"pullback_close=peak>{self.pullback_peak_trigger}%+adaptive_drop, "
             f"partial={self.partial_profit_pct}%@{self.partial_close_ratio*100:.0f}%)"
         )
 
@@ -90,15 +92,63 @@ class PositionWatchdog:
         if self.executor:
             self.executor._recently_traded[epic] = datetime.now()
 
+    def _is_trend_aligned(self, deal_id, direction):
+        """Check if position direction is aligned with the regime at entry."""
+        regime = self._position_regimes.get(deal_id, "")
+        if not regime:
+            return False
+        if direction == "BUY" and "UP" in regime:
+            return True
+        if direction == "SELL" and "DOWN" in regime:
+            return True
+        return False
+
+    def _calculate_adaptive_pullback(self, epic, direction, pl_pct, deal_id=None):
+        """Calculate adaptive pullback threshold based on ATR, trend, and profit level.
+
+        Returns pullback_pct clamped to [0.5%, 3.0%].
+        """
+        atr_pct = self._atr_cache.get(epic, 2.0)
+        base_pullback = atr_pct * 0.75
+
+        # Trend bonus: position aligned with entry regime gets wider pullback tolerance
+        if deal_id and self._is_trend_aligned(deal_id, direction):
+            base_pullback *= 1.5
+
+        # Daily trend bonus from MTF: with daily trend = 2x wider, against = 0.5x tighter
+        if self.mtf:
+            try:
+                htf = self.mtf.get_higher_tf_context(epic)
+                daily_trend = htf.get("daily_trend", "NEUTRAL")
+                if (direction == "BUY" and daily_trend == "UP") or \
+                   (direction == "SELL" and daily_trend == "DOWN"):
+                    base_pullback *= 2.0  # With daily trend: let winners run
+                elif (direction == "BUY" and daily_trend == "DOWN") or \
+                     (direction == "SELL" and daily_trend == "UP"):
+                    base_pullback *= 0.5  # Against daily trend: tighter exit
+            except Exception:
+                pass
+
+        # Profit tightening: protect larger gains more aggressively
+        if pl_pct > 8.0:
+            base_pullback *= 0.5
+        elif pl_pct > 4.0:
+            base_pullback *= 0.75
+
+        # Clamp to reasonable range
+        return max(0.5, min(3.0, base_pullback))
+
     def update_atr(self, epic, atr_pct):
         """Called by main scan cycle to cache latest ATR for each coin."""
         self._atr_cache[epic] = atr_pct
 
-    def track_entry(self, deal_id, epic, confidence=None):
-        """Track position entry time and confidence for max hold and scale-in."""
+    def track_entry(self, deal_id, epic, confidence=None, regime=None):
+        """Track position entry time, confidence, and regime for max hold and scale-in."""
         self._entry_times[deal_id] = datetime.now()
         if confidence is not None:
             self._entry_confidence[deal_id] = confidence
+        if regime is not None:
+            self._position_regimes[deal_id] = regime
 
     def fix_open_positions_rr(self):
         """Fix R:R on all open positions - move TP to ensure min 1.5:1 R:R.
@@ -239,6 +289,7 @@ class PositionWatchdog:
             self._last_sl_update.pop(deal_id, None)
             self._scale_in_done.discard(deal_id)
             self._entry_confidence.pop(deal_id, None)
+            self._position_regimes.pop(deal_id, None)
 
         for pos in open_positions:
             self._evaluate_position(pos)
@@ -321,13 +372,14 @@ class PositionWatchdog:
         if deal_id in self._breakeven_set and pl_pct >= self.progressive_sl_trigger:
             self._update_progressive_sl(deal_id, epic, direction, entry_price, current_price, pl_pct, pos)
 
-        # -- Rule 3c: PROFIT PULLBACK CLOSE --
-        if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= self.pullback_close_pct:
+        # -- Rule 3c: PROFIT PULLBACK CLOSE (adaptive) --
+        adaptive_pullback = self._calculate_adaptive_pullback(epic, direction, pl_pct, deal_id)
+        if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= adaptive_pullback:
             try:
                 logger.warning(
                     f"WATCHDOG: PROFIT PULLBACK closing {epic}! "
                     f"Peak P/L: +{peak_profit_pct:.1f}%, Now: +{pl_pct:.1f}%, "
-                    f"Gave back: {drawdown_from_peak_pct:.2f}% from peak"
+                    f"Gave back: {drawdown_from_peak_pct:.2f}% from peak (adaptive threshold: {adaptive_pullback:.2f}%)"
                 )
                 self.client.close_position(deal_id, direction=direction, size=size)
                 self._set_cooldown(epic)
@@ -335,7 +387,7 @@ class PositionWatchdog:
                 self.notifier.send(
                     f"💰 <b>Profit taget: {epic}</b>\n"
                     f"Peak: +{peak_profit_pct:.1f}% | Lukket: +{pl_pct:.1f}%\n"
-                    f"Pullback fra top: {drawdown_from_peak_pct:.2f}%\n"
+                    f"Pullback fra top: {drawdown_from_peak_pct:.2f}% (grænse: {adaptive_pullback:.2f}%)\n"
                     f"Beskyttede profit i stedet for at vente"
                 )
                 self._trigger_cycle_trade(epic, direction, pl_pct)
@@ -367,7 +419,10 @@ class PositionWatchdog:
         # -- Rule 5: Dynamic Take Profit extension --
         self._check_dynamic_tp(deal_id, epic, direction, entry_price, current_price, pl_pct, atr_pct, pos)
 
-        # -- Rule 6: ATR-based trailing stop --
+        # -- Rule 6: ATR-based trailing stop (trend-aware) --
+        # Trend-aligned positions get 1.5x wider trailing distance
+        if self._is_trend_aligned(deal_id, direction):
+            trailing_distance *= 1.5
         if pl_pct >= self.trailing_trigger_pct and peak_profit_pct > 0 and drawdown_from_peak_pct > trailing_distance:
             try:
                 logger.warning(
@@ -436,8 +491,13 @@ class PositionWatchdog:
             logger.error(f"Watchdog: Sentiment close failed for {epic}: {e}")
 
     def _update_progressive_sl(self, deal_id, epic, direction, entry_price, current_price, pl_pct, pos):
-        """Move server-side SL up as position profits grow."""
-        trail_pct = self.progressive_sl_trail
+        """Move server-side SL up as position profits grow. ATR-adaptive trail distance."""
+        atr_pct = self._atr_cache.get(epic, 2.0)
+        # ATR-based trail: 0.5 * ATR, or 0.75 * ATR for trend-aligned
+        if self._is_trend_aligned(deal_id, direction):
+            trail_pct = max(0.5, min(2.5, atr_pct * 0.75))
+        else:
+            trail_pct = max(0.5, min(2.5, atr_pct * 0.5))
 
         if direction == "BUY":
             new_sl = round(current_price * (1 - trail_pct / 100), 5)
@@ -724,7 +784,7 @@ class PositionWatchdog:
         opposite_direction = "SELL" if closed_direction == "BUY" else "BUY"
         thread = threading.Thread(
             target=self._cycle_callback,
-            args=(epic, opposite_direction),
+            args=(epic, opposite_direction, closed_pl_pct),
             daemon=True,
         )
         thread.start()

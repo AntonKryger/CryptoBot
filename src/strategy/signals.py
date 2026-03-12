@@ -35,9 +35,11 @@ class SignalEngine:
         from src.strategy.reddit_sentiment import RedditSentiment
         self.reddit = RedditSentiment(config)
 
-        # Regime detector and time bias (set externally by main.py / main_ai.py)
+        # Regime detector, time bias, multi-timeframe, news (set externally by main.py / main_ai.py)
         self.regime_detector = None
         self.time_bias = None
+        self.mtf = None  # MultiTimeframeAnalyzer
+        self.news_monitor = None  # NewsMonitor
 
     def prepare_dataframe(self, prices_data):
         """Convert Capital.com price data to a pandas DataFrame."""
@@ -281,6 +283,14 @@ class SignalEngine:
                 except Exception as e:
                     logger.warning(f"Time bias failed for {epic}: {e}")
 
+        # Multi-timeframe context
+        htf_context = None
+        if self.mtf and epic:
+            try:
+                htf_context = self.mtf.get_higher_tf_context(epic)
+            except Exception as e:
+                logger.warning(f"MTF failed for {epic}: {e}")
+
         return {
             "buy_sentiment_adj": buy_sentiment_adj,
             "sell_sentiment_adj": sell_sentiment_adj,
@@ -289,6 +299,7 @@ class SignalEngine:
             "adx": adx,
             "time_bias_label": time_bias_label,
             "time_bias_return": time_bias_return,
+            "htf_context": htf_context,
         }
 
     def _apply_common_adjustments(self, score, reasons, df, epic, direction, ctx):
@@ -326,6 +337,47 @@ class SignalEngine:
             if time_adj != 0:
                 score += time_adj
                 reasons.append(f"Time bias {ctx['time_bias_label']} ({time_adj:+d})")
+
+        # Breaking news adjustment
+        if self.news_monitor and epic:
+            news_adj = self.news_monitor.get_news_score_adjustment(epic)
+            if news_adj != 0:
+                # Only apply if news aligns with direction
+                if (direction == "BUY" and news_adj > 0) or (direction == "SELL" and news_adj < 0):
+                    score += abs(news_adj)
+                    reasons.append(f"Breaking news ({news_adj:+d})")
+                elif (direction == "BUY" and news_adj < 0) or (direction == "SELL" and news_adj > 0):
+                    score -= abs(news_adj)
+                    reasons.append(f"Breaking news counter ({news_adj:+d})")
+
+            alt_adj = self.news_monitor.get_altcoin_adjustment(epic)
+            if alt_adj != 0:
+                if (direction == "BUY" and alt_adj > 0) or (direction == "SELL" and alt_adj < 0):
+                    score += 1
+                    reasons.append(f"BTC dominance {'falling' if alt_adj > 0 else 'rising'} ({alt_adj:+d})")
+
+        # Multi-timeframe alignment
+        htf = ctx.get("htf_context")
+        if htf:
+            alignment = htf.get("trend_alignment", "NEUTRAL")
+            if direction == "BUY" and alignment == "ALIGNED_UP":
+                score += 2
+                reasons.append(f"HTF aligned UP (4H+Daily bullish, +2)")
+            elif direction == "BUY" and alignment == "ALIGNED_DOWN":
+                score -= 3
+                reasons.append(f"HTF AGAINST: 4H+Daily bearish (-3)")
+            elif direction == "SELL" and alignment == "ALIGNED_DOWN":
+                score += 2
+                reasons.append(f"HTF aligned DOWN (4H+Daily bearish, +2)")
+            elif direction == "SELL" and alignment == "ALIGNED_UP":
+                score -= 3
+                reasons.append(f"HTF AGAINST: 4H+Daily bullish (-3)")
+            elif direction == "BUY" and htf.get("daily_trend") == "DOWN":
+                score -= 2
+                reasons.append(f"Daily trend DOWN (-2)")
+            elif direction == "SELL" and htf.get("daily_trend") == "UP":
+                score -= 2
+                reasons.append(f"Daily trend UP (-2)")
 
         return score, reasons
 
@@ -369,6 +421,7 @@ class SignalEngine:
             "adx": ctx["adx"],
             "time_bias": ctx["time_bias_label"],
             "time_bias_return": ctx["time_bias_return"],
+            "htf_context": ctx.get("htf_context"),
         }
 
         # -- Check if there's a tradeable range --

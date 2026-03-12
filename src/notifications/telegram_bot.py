@@ -19,6 +19,7 @@ class TelegramNotifier:
         # Command handling
         self._last_update_id = 0
         self._command_handlers = {}
+        self._chat_handler = None  # Free-text chat handler
         self._polling_thread = None
         self._polling_active = False
 
@@ -27,6 +28,12 @@ class TelegramNotifier:
     def register_command(self, command, handler):
         """Register a handler function for a /command."""
         self._command_handlers[command] = handler
+
+    def register_chat_handler(self, handler):
+        """Register a handler for free-text messages (non-commands).
+        Handler receives (text: str) and returns a response string or None.
+        """
+        self._chat_handler = handler
 
     def start_command_listener(self):
         """Start polling for Telegram commands in a background thread."""
@@ -76,6 +83,14 @@ class TelegramNotifier:
             return
 
         if not text.startswith("/"):
+            # Free-text chat message
+            if self._chat_handler:
+                thread = threading.Thread(
+                    target=self._handle_chat_async,
+                    args=(text,),
+                    daemon=True,
+                )
+                thread.start()
             return
 
         parts = text.split()
@@ -93,6 +108,22 @@ class TelegramNotifier:
                 self.send(f"Fejl ved {command}: {e}")
         else:
             self.send(f"Ukendt kommando: {command}\nBrug /help for at se kommandoer.")
+
+    def _handle_chat_async(self, text):
+        """Handle free-text chat in a background thread."""
+        try:
+            response = self._chat_handler(text)
+            if response:
+                # Split long responses for Telegram's 4096 char limit
+                if len(response) > 4000:
+                    parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
+                    for part in parts:
+                        self.send(part)
+                else:
+                    self.send(response)
+        except Exception as e:
+            logger.error(f"Chat handler error: {e}")
+            self.send(f"Fejl i chat: {e}")
 
     # ── Send messages ────────────────────────────────────────────
 

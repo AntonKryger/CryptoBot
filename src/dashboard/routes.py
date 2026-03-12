@@ -128,3 +128,56 @@ def api_comparison():
 def api_compare():
     period = request.args.get("period", "all")
     return jsonify(current_app.stats.get_period_comparison(period))
+
+
+@bp.route("/api/validate_pl")
+def api_validate_pl():
+    """Validate P/L data integrity: show DB totals, trade counts, and duplicate detection."""
+    import sqlite3
+    results = {}
+    for bot_name, db_path in current_app.config["DB_PATHS"].items():
+        try:
+            db = sqlite3.connect(db_path)
+            # Total P/L from closed trades
+            row = db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(profit_loss), 0) FROM trades WHERE status = 'CLOSED' AND profit_loss IS NOT NULL"
+            ).fetchone()
+            closed_count, total_pl = row
+
+            # Open trades
+            open_count = db.execute(
+                "SELECT COUNT(*) FROM trades WHERE status = 'OPEN'"
+            ).fetchone()[0]
+
+            # Trades with NULL P/L
+            null_pl = db.execute(
+                "SELECT COUNT(*) FROM trades WHERE status = 'CLOSED' AND profit_loss IS NULL"
+            ).fetchone()[0]
+
+            # Duplicate deal_ids
+            dupes = db.execute(
+                "SELECT deal_id, COUNT(*) as cnt FROM trades WHERE deal_id IS NOT NULL "
+                "GROUP BY deal_id HAVING cnt > 1"
+            ).fetchall()
+
+            # Source breakdown
+            source_rows = db.execute(
+                "SELECT COALESCE(source, 'unknown'), COUNT(*), COALESCE(SUM(profit_loss), 0) "
+                "FROM trades WHERE status = 'CLOSED' GROUP BY COALESCE(source, 'unknown')"
+            ).fetchall()
+            sources = {r[0]: {"count": r[1], "pl": round(r[2], 2)} for r in source_rows}
+
+            db.close()
+            results[bot_name] = {
+                "closed_trades": closed_count,
+                "open_trades": open_count,
+                "total_pl_eur": round(total_pl, 2),
+                "null_pl_trades": null_pl,
+                "duplicate_deal_ids": len(dupes),
+                "duplicates": [{"deal_id": d[0], "count": d[1]} for d in dupes[:10]],
+                "sources": sources,
+            }
+        except Exception as e:
+            results[bot_name] = {"error": str(e)}
+
+    return jsonify(results)

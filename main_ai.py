@@ -15,6 +15,8 @@ from src.strategy.signals import SignalEngine
 from src.strategy.ai_analyst import AIAnalyst
 from src.strategy.regime_detector import RegimeDetector
 from src.strategy.time_bias import TimeBias
+from src.strategy.multi_timeframe import MultiTimeframeAnalyzer
+from src.strategy.news_monitor import NewsMonitor
 from src.risk.manager import RiskManager
 from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
@@ -44,8 +46,12 @@ class CryptoBotAI:
         self.ai = AIAnalyst(self.config)
         self.regime = RegimeDetector(self.client, self.config)
         self.time_bias = TimeBias(self.client)
+        self.mtf = MultiTimeframeAnalyzer(self.client)
+        self.news = NewsMonitor(self.config)
         self.signals.regime_detector = self.regime
         self.signals.time_bias = self.time_bias
+        self.signals.mtf = self.mtf
+        self.signals.news_monitor = self.news
         self.risk = RiskManager(self.config)
         self.executor = TradeExecutor(self.client, self.risk, self.config)
         self.notifier = TelegramNotifier(self.config)
@@ -57,8 +63,10 @@ class CryptoBotAI:
         self.watchdog.signal_engine = self.signals
         self.watchdog.executor = self.executor
         self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
-        # Give AI access to trade history for feedback loop
+        self.watchdog.mtf = self.mtf  # For daily trend context in exits
+        # Give AI access to trade history and news for feedback loop
         self.ai.trade_executor = self.executor
+        self.ai.news_monitor = self.news
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
 
@@ -104,8 +112,9 @@ class CryptoBotAI:
             f"Kommandoer: /ai_status /ai_trades /ai_stop /ai_debug /ai_help"
         )
 
-        # Register Telegram commands
+        # Register Telegram commands and free-text chat
         self._register_commands()
+        self.notifier.register_chat_handler(self._handle_chat)
         self.notifier.start_command_listener()
 
         # Start position watchdog (fast monitoring every 10-15 sec)
@@ -210,9 +219,17 @@ class CryptoBotAI:
                 # Get regime and time bias
                 regime, adx = self.regime.get_regime(epic)
                 time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+                # Get higher-timeframe context
+                htf_context = None
+                try:
+                    htf_context = self.mtf.get_higher_tf_context(epic)
+                except Exception as e:
+                    logger.warning(f"[AI] MTF failed for {epic}: {e}")
+
                 regime_data = {
                     "regime": regime, "adx": adx,
                     "time_bias": time_bias_label, "time_bias_return": time_bias_return,
+                    "htf_context": htf_context,
                 }
 
                 # Get sentiment data
@@ -301,10 +318,11 @@ class CryptoBotAI:
                                              stop_loss, take_profit, result, details)
                     self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
 
-                    # Track in watchdog for max hold time and scale-in
+                    # Track in watchdog for max hold time, scale-in, and trend-aware exit
                     deal_id = result.get("dealReference") or result.get("dealId", "")
                     confidence = details.get("ai_confidence", 5)
-                    self.watchdog.track_entry(deal_id, epic, confidence)
+                    regime = details.get("regime", "")
+                    self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
 
                     self._notify_ai_trade(signal_type, epic, size, current_price,
                                           stop_loss, take_profit, details, allocated_amount)
@@ -312,7 +330,7 @@ class CryptoBotAI:
             except Exception as e:
                 logger.error(f"[AI] Trade execution failed for {epic}: {e}")
 
-    def _handle_cycle_trade(self, epic, opposite_direction):
+    def _handle_cycle_trade(self, epic, opposite_direction, closed_pl_pct=0):
         """Called by watchdog when a position closes - check for reversal trade."""
         try:
             # Set cooldown immediately to prevent scan cycle from also opening
@@ -329,7 +347,15 @@ class CryptoBotAI:
 
             # Get regime
             regime, adx = self.regime.get_regime(epic)
-            regime_data = {"regime": regime, "adx": adx}
+
+            # Get higher-timeframe context
+            htf_context = None
+            try:
+                htf_context = self.mtf.get_higher_tf_context(epic)
+            except Exception:
+                pass
+
+            regime_data = {"regime": regime, "adx": adx, "htf_context": htf_context}
 
             # Get sentiment
             sentiment_data = None
@@ -346,9 +372,36 @@ class CryptoBotAI:
                 logger.info(f"[Cycle] {epic}: AI says {signal_type}, not {opposite_direction}. Skipping.")
                 return
 
-            if confidence < 7:
-                logger.info(f"[Cycle] {epic}: Confidence {confidence} < 7. Skipping reversal.")
+            if confidence < 8:
+                logger.info(f"[Cycle] {epic}: Confidence {confidence} < 8 for cycle trade. Skipping.")
                 return
+
+            # Exhaustion check: if closed position had >3% profit, require conf >= 9 for reversal
+            if closed_pl_pct > 3.0 and confidence < 9:
+                logger.info(f"[Cycle] {epic}: Exhaustion guard - closed P/L was +{closed_pl_pct:.1f}%, need conf >= 9 (got {confidence})")
+                return
+
+            # 4H trend alignment check
+            if htf_context:
+                h4_trend = htf_context.get("h4_trend", "NEUTRAL")
+                if signal_type == "BUY" and h4_trend == "DOWN":
+                    logger.info(f"[Cycle] {epic}: BUY blocked - 4H trend is DOWN")
+                    return
+                if signal_type == "SELL" and h4_trend == "UP":
+                    logger.info(f"[Cycle] {epic}: SELL blocked - 4H trend is UP")
+                    return
+
+            # Time-of-day filter: block counter-bias cycle trades
+            try:
+                time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+                if signal_type == "BUY" and time_bias_label == "BEARISH" and time_bias_return < -0.05:
+                    logger.warning(f"[Cycle] {epic}: BUY blocked - bearish hour (avg {time_bias_return:+.3f}%)")
+                    return
+                if signal_type == "SELL" and time_bias_label == "BULLISH" and time_bias_return > 0.05:
+                    logger.warning(f"[Cycle] {epic}: SELL blocked - bullish hour (avg {time_bias_return:+.3f}%)")
+                    return
+            except Exception:
+                pass
 
             # Execute cycle trade
             balance = self.client.get_account_balance()
@@ -381,7 +434,7 @@ class CryptoBotAI:
                 self.executor._log_trade(epic, signal_type, size, current_price,
                                          stop_loss, take_profit, result, details)
                 deal_id = result.get("dealReference") or result.get("dealId", "")
-                self.watchdog.track_entry(deal_id, epic, confidence)
+                self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
 
                 self.notifier.send(
                     f"🔄 <b>Cycle trade: {epic}</b>\n"
@@ -758,6 +811,45 @@ class CryptoBotAI:
         self.running = False
         return "🧠 <b>CryptoBot AI stopper...</b>"
 
+    def _handle_chat(self, text):
+        """Handle free-text chat messages via Telegram."""
+        return self.ai.chat(text, context_fn=self._build_chat_context)
+
+    def _build_chat_context(self):
+        """Gather current bot state for AI chat context."""
+        ctx = {}
+        try:
+            balance = self.client.get_account_balance()
+            if balance:
+                ctx["balance"] = balance["balance"]
+                ctx["available"] = balance.get("available", balance["balance"])
+                if self.risk.daily_start_balance:
+                    ctx["daily_pl"] = balance["balance"] - self.risk.daily_start_balance
+
+            positions = self.client.get_positions()
+            open_pos = positions.get("positions", [])
+            ctx["positions"] = []
+            for p in open_pos:
+                deal_id = p["position"]["dealId"]
+                entry_time = self.watchdog._entry_times.get(deal_id)
+                hold_hours = ""
+                if entry_time:
+                    hold_hours = f"{(datetime.now() - entry_time).total_seconds() / 3600:.1f}"
+                ctx["positions"].append({
+                    "epic": p["market"]["epic"],
+                    "direction": p["position"]["direction"],
+                    "profit": p["position"].get("profit", 0),
+                    "hold_hours": hold_hours,
+                })
+
+            ctx["regimes"] = self.regime.get_all_regimes()
+            ctx["recent_trades"] = self.executor.get_trade_history(limit=5)
+            ctx["stats"] = self.executor.get_stats()
+        except Exception as e:
+            logger.error(f"Chat context error: {e}")
+
+        return ctx
+
     def _cmd_help(self, args=None):
         return (
             "🧠 <b>CryptoBot AI Kommandoer</b>\n\n"
@@ -773,7 +865,14 @@ class CryptoBotAI:
             "/close ALL - Luk alle\n\n"
             "<b>System:</b>\n"
             "/stop - Stop AI-botten\n"
-            "/help - Denne besked"
+            "/help - Denne besked\n\n"
+            "<b>💬 Chat:</b>\n"
+            "Skriv frit til mig! Spørg om handler,\n"
+            "markedsanalyse, eller giv mig feedback.\n\n"
+            "<b>Træning:</b>\n"
+            "husk: &lt;regel&gt; - Gem en handelsregel\n"
+            "glem: &lt;søgeord&gt; - Fjern en regel\n"
+            "regler - Se alle aktive regler"
         )
 
     def stop(self):

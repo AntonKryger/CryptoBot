@@ -54,6 +54,11 @@ class TradeExecutor:
             db.execute("ALTER TABLE trades ADD COLUMN balance_after REAL")
         except Exception:
             pass  # Column already exists
+        # Add source column for tracking trade origin (bot vs api_reconcile)
+        try:
+            db.execute("ALTER TABLE trades ADD COLUMN source TEXT DEFAULT 'bot'")
+        except Exception:
+            pass  # Column already exists
         db.execute("""
             CREATE TABLE IF NOT EXISTS balance_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,12 +129,20 @@ class TradeExecutor:
             except Exception as e:
                 logger.warning(f"Could not fetch deal confirmation for {deal_ref}: {e}")
 
-            # Log to database
+            # Log to database (with duplicate guard)
             db = self._get_db()
+            existing = db.execute(
+                "SELECT id FROM trades WHERE deal_id = ?", (deal_id,)
+            ).fetchone()
+            if existing:
+                logger.warning(f"Trade DB: deal_id {deal_id} already exists, skipping duplicate")
+                db.close()
+                self._recently_traded[epic] = datetime.now()
+                return result, None
             db.execute("""
                 INSERT INTO trades (timestamp, epic, direction, size, entry_price,
-                                    stop_loss, take_profit, deal_id, status, signal_details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                                    stop_loss, take_profit, deal_id, status, signal_details, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot')
             """, (
                 datetime.now().isoformat(),
                 epic,
@@ -156,7 +169,7 @@ class TradeExecutor:
             return None, str(e)
 
     def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details):
-        """Log a trade to the database."""
+        """Log a trade to the database. Checks for duplicate deal_id before insert."""
         deal_ref = result.get("dealReference", "unknown")
         deal_id = deal_ref
         try:
@@ -167,10 +180,18 @@ class TradeExecutor:
         except Exception:
             pass
         db = self._get_db()
+        # Duplicate guard: skip if deal_id already exists
+        existing = db.execute(
+            "SELECT id FROM trades WHERE deal_id = ?", (deal_id,)
+        ).fetchone()
+        if existing:
+            logger.warning(f"Trade DB: deal_id {deal_id} already exists, skipping duplicate insert")
+            db.close()
+            return
         db.execute("""
             INSERT INTO trades (timestamp, epic, direction, size, entry_price,
-                                stop_loss, take_profit, deal_id, status, signal_details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                                stop_loss, take_profit, deal_id, status, signal_details, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot')
         """, (
             datetime.now().isoformat(),
             epic,
@@ -272,16 +293,17 @@ class TradeExecutor:
                 if deal_id in active_deal_ids or epic in active_epics:
                     continue  # Still active
 
-                # Find matching close transaction
+                # Find matching close transaction (dealId-based primary match)
                 profit_loss, exit_ts, new_deal_id = self._match_close(
-                    epic, ts, closes_by_epic
+                    epic, ts, closes_by_epic, deal_id=deal_id
                 )
 
                 db.execute("""
                     UPDATE trades SET status = 'CLOSED',
                     exit_timestamp = COALESCE(?, ?),
                     profit_loss = ?,
-                    deal_id = COALESCE(?, deal_id)
+                    deal_id = COALESCE(?, deal_id),
+                    source = 'api_reconcile'
                     WHERE id = ?
                 """, (exit_ts, datetime.now().isoformat(), profit_loss, new_deal_id, trade_id))
                 reconciled += 1
@@ -361,11 +383,22 @@ class TradeExecutor:
             logger.error(f"Transaction history fetch failed: {e}")
         return result
 
-    def _match_close(self, epic, open_timestamp, closes_by_epic):
-        """Find the earliest unused close transaction for an epic after open_timestamp.
+    def _match_close(self, epic, open_timestamp, closes_by_epic, deal_id=None):
+        """Find matching close transaction. Primary: dealId match. Fallback: epic + timestamp.
         Returns: (profit_loss, exit_timestamp, deal_id) or (None, None, None)
         """
         epic_closes = closes_by_epic.get(epic, [])
+
+        # Primary match: by dealId (most accurate)
+        if deal_id:
+            for close in epic_closes:
+                if close["used"]:
+                    continue
+                if close["dealId"] == deal_id:
+                    close["used"] = True
+                    return close["pl"], close["date"], close["dealId"]
+
+        # Fallback: earliest unused close after open timestamp (legacy matching)
         for close in epic_closes:
             if close["used"]:
                 continue
