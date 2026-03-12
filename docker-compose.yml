@@ -30,6 +30,15 @@ services:
       - ./data_ad1:/app/data
       - ./logs_ad1:/app/logs
 
+  sd1:
+    <<: *bot-common
+    container_name: cryptobot-sd1
+    command: ["python", "-u", "main.py", "--config", "config.yaml"]
+    volumes:
+      - ./config_sd1.yaml:/app/config.yaml:ro
+      - ./data_sd1:/app/data
+      - ./logs_sd1:/app/logs
+
   dashboard:
     <<: *bot-common
     container_name: cryptobot-dashboard
@@ -42,3 +51,4 @@ services:
       - ./data_rl1:/app/bot_data/rl1:ro
       - ./data_rd1:/app/bot_data/rd1:ro
       - ./data_ad1:/app/bot_data/ad1:ro
+      - ./data_sd1:/app/bot_data/sd1:ro
