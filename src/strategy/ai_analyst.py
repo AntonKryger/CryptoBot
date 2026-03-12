@@ -63,9 +63,9 @@ class AIAnalyst:
         self.news_monitor = None    # Set by main_ai.py for breaking news
         self.rule_db_path = ai_cfg.get("rule_db_path", "data/trades.db")  # Rule bot DB for cross-learning
 
-        # Chat conversation state
-        self._conversation_history = []  # [{role, content}] - capped at 20
-        self._max_history = 20
+        # Chat conversation state (persisted to SQLite)
+        self._max_history = 50  # max exchanges to send to API
+        self._max_token_estimate = 80000  # rough token guard
         self._active_strategies = []  # Set by main_ai.py from weekly evaluator
         self._feedback_db_path = config.get("database", {}).get("path", "data_ai/trades.db")
         self._init_feedback_table()
@@ -732,11 +732,69 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
                     active INTEGER DEFAULT 1
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    session_date DATE NOT NULL
+                )
+            """)
             conn.commit()
             conn.close()
-            logger.info("Feedback table initialized")
+            logger.info("Feedback + conversation tables initialized")
         except Exception as e:
             logger.error(f"Failed to init feedback table: {e}")
+
+    def _save_chat_message(self, role, message):
+        """Save a chat message to SQLite conversation_history."""
+        try:
+            conn = sqlite3.connect(self._feedback_db_path)
+            conn.execute(
+                "INSERT INTO conversation_history (timestamp, role, message, session_date) VALUES (?, ?, ?, ?)",
+                (datetime.now().isoformat(), role, message, datetime.now().strftime("%Y-%m-%d"))
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Save chat message error: {e}")
+
+    def _load_chat_history(self):
+        """Load last 24h of chat history from SQLite, with token guard.
+
+        Returns list of {"role": str, "content": str} for Haiku API.
+        """
+        try:
+            conn = sqlite3.connect(self._feedback_db_path)
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+            cursor = conn.execute(
+                "SELECT role, message FROM conversation_history "
+                "WHERE timestamp > ? ORDER BY id ASC",
+                (cutoff,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return []
+
+            # Token guard: rough estimate 1 token ~= 4 chars
+            messages = [{"role": role, "content": msg} for role, msg in rows]
+            total_chars = sum(len(m["content"]) for m in messages)
+            estimated_tokens = total_chars // 4
+
+            if estimated_tokens > self._max_token_estimate:
+                # Keep only last N exchanges (1 exchange = 2 messages)
+                max_messages = self._max_history * 2
+                messages = messages[-max_messages:]
+                logger.info(f"Chat history trimmed to {len(messages)} messages (token guard)")
+
+            return messages
+        except Exception as e:
+            logger.error(f"Load chat history error: {e}")
+            return []
 
     def _load_user_feedback(self, limit=10):
         """Load active user feedback for injection into trading prompts."""
@@ -833,8 +891,8 @@ VIGTIGE REGLER:
 - Hvis brugeren sender et billede/chart, analyser det grundigt (trends, patterns, S/R, indikatorer)
 {feedback_text}"""
 
-        # Add conversation history
-        messages = list(self._conversation_history)
+        # Load persistent conversation history from SQLite (last 24h)
+        messages = self._load_chat_history()
 
         # Build user message content (text or multimodal with image)
         text_part = ""
@@ -864,11 +922,9 @@ VIGTIGE REGLER:
 
             reply = response.content[0].text.strip()
 
-            # Update conversation history (capped)
-            self._conversation_history.append({"role": "user", "content": user_message})
-            self._conversation_history.append({"role": "assistant", "content": reply})
-            if len(self._conversation_history) > self._max_history:
-                self._conversation_history = self._conversation_history[-self._max_history:]
+            # Persist both messages to SQLite
+            self._save_chat_message("user", user_message)
+            self._save_chat_message("assistant", reply)
 
             return reply
 
