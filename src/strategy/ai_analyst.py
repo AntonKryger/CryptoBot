@@ -883,8 +883,9 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
         if self.position_sync:
             try:
                 portfolio_text = "\n" + self.position_sync.format_for_prompt() + "\n"
-            except Exception:
-                pass
+                logger.info(f"[Chat] Portfolio injected: {len(portfolio_text)} chars, {self.position_sync.get_portfolio()['open_count']} positions")
+            except Exception as e:
+                logger.error(f"[Chat] Portfolio inject failed: {e}")
 
         chat_system = f"""Du er en erfaren krypto-CFD-trader der styrer en automatiseret handelsbot.
 Du taler dansk. Du er direkte, ærlig og forklarer dine beslutninger klart.
@@ -964,7 +965,8 @@ VIGTIGE REGLER:
             lines.append(f"\nÅbne positioner ({len(positions)}):")
             for p in positions:
                 emoji = "🟢" if p["direction"] == "BUY" else "🔴"
-                lines.append(f"  {emoji} {p['epic']} {p['direction']} P/L: EUR {p.get('profit', 0):+.2f} (hold: {p.get('hold_hours', '?')}t)")
+                profit = p.get('profit') or 0
+                lines.append(f"  {emoji} {p['epic']} {p['direction']} P/L: EUR {profit:+.2f} (hold: {p.get('hold_hours', '?')}t)")
         else:
             lines.append("Ingen åbne positioner")
 
@@ -972,14 +974,16 @@ VIGTIGE REGLER:
         if regimes:
             lines.append("\nMarkedsregimer:")
             for epic, data in regimes.items():
-                lines.append(f"  {epic}: {data['regime']} (ADX: {data['adx']:.0f})")
+                adx = data.get('adx') or 0
+                lines.append(f"  {epic}: {data['regime']} (ADX: {adx:.0f})")
 
         recent = ctx.get("recent_trades", [])
         if recent:
             lines.append(f"\nSeneste handler:")
             for t in recent[:5]:
-                emoji = "✅" if (t.get("profit_loss") or 0) >= 0 else "❌"
-                lines.append(f"  {emoji} {t['epic']} {t['direction']} P/L: EUR {t.get('profit_loss', 0):+.2f}")
+                pl = t.get("profit_loss") or 0
+                emoji = "✅" if pl >= 0 else "❌"
+                lines.append(f"  {emoji} {t['epic']} {t['direction']} P/L: EUR {pl:+.2f}")
 
         stats = ctx.get("stats", {})
         if stats:
