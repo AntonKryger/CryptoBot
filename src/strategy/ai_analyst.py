@@ -135,7 +135,13 @@ class AIAnalyst:
                 result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
                 if result_text.endswith("```"):
                     result_text = result_text[:-3].strip()
-            result = json.loads(result_text)
+            # Extract JSON object even if Haiku added extra text after it
+            import re
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', result_text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                result = json.loads(result_text)
 
             signal = result.get("signal", "HOLD").upper()
             confidence = int(result.get("confidence", 0))
