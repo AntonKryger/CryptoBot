@@ -52,6 +52,45 @@ Claude Haiku analyserer markedsdata med **pattern recognition fokus**:
 - RSI ekstremfilter (>72 for BUY, <28 for SELL)
 - 3+ consecutive losses paa samme coin → kraev confidence >= 8
 
+### Python Hard Gates (`src/risk/hard_rules.py`)
+
+UBRYDELIGE Python-gates der koerer FØR og EFTER AI-beslutninger. Kan IKKE overrides af Haiku.
+Alle 3 trade paths (scan cycle, cycle trade, scale-in) bruger samme gates.
+
+**Pre-AI gates (foer tokens bruges):**
+
+| # | Gate | Default | Beskrivelse |
+|---|------|---------|-------------|
+| 1 | Handelstid | 08:00-22:00 CET | Ingen nye trades udenfor vindue |
+| 2 | Circuit breaker | 3 tab → 20 min pause | Tvungen pause efter consecutive losses |
+| 3 | Max positioner | 3 | Hard cap paa aabne positioner |
+| 4 | Min interval | 15 min | Minimum tid mellem trades |
+| 5 | ADX gate | >= 20 | Ingen trades i ranging/choppy marked |
+
+**Post-AI gates (efter Haiku returnerer SL/TP):**
+
+| # | Gate | Default | Beskrivelse |
+|---|------|---------|-------------|
+| 6 | R:R gate | >= 2.0:1 | Minimum risk/reward ratio |
+| 7 | Max risiko | 1.5% af konto | Max tab per trade i EUR |
+
+**Konfigurerbar via `config_ai.yaml`:**
+```yaml
+trading:
+  min_adx: 20
+  min_rr_ratio: 2.0
+  max_hold_hours: 4
+  max_positions: 3
+  min_interval_minutes: 15
+  trading_hours_start: 8
+  trading_hours_end: 22
+  circuit_breaker_losses: 3
+  circuit_breaker_pause_minutes: 20
+  max_risk_pct: 1.5
+```
+
+Circuit breaker state overlever restart (SQLite). Telegram notifikationer max 1 per gate-type per 30 min.
+
 ---
 
 ## Arkitektur
@@ -106,7 +145,8 @@ CryptoBot/
 │   │   ├── time_bias.py             # Time-of-day bias (7-dages historik)
 │   │   └── reddit_sentiment.py      # CryptoPanic + CoinGecko + Fear & Greed
 │   ├── risk/
-│   │   └── manager.py               # ATR SL/TP, R:R enforcement, confidence sizing
+│   │   ├── manager.py               # ATR SL/TP, R:R enforcement, confidence sizing
+│   │   └── hard_rules.py            # 7 Python hard gates (ADX, R:R, hours, circuit breaker)
 │   ├── executor/
 │   │   ├── trade_executor.py        # Handelsudfoersel, SQLite, reconcile
 │   │   └── position_watchdog.py     # 9-regel positionsovervagning (12 sek.)
@@ -132,7 +172,7 @@ CryptoBot/
 ### ATR-baseret Stop Loss / Take Profit
 - **SL**: `entry * (1 ∓ atr_pct * 2.0)`, clamped [3%, 8%]
 - **TP**: `entry * (1 ± atr_pct * 3.0)`, clamped [3%, 10%]
-- **R:R enforcement**: TP >= SL_distance × 1.5 (minimum 1.5:1)
+- **R:R enforcement**: TP >= SL_distance × 2.0 (minimum 2.0:1, konfigurerbar via `trading.min_rr_ratio`)
 
 ### Confidence-baseret Position Sizing
 
@@ -166,7 +206,7 @@ Baggrundstraad der tjekker positioner hver 12 sekund:
 
 | # | Regel | Beskrivelse |
 |---|-------|-------------|
-| 1 | Max holdtid | Major: 24h, altcoin: 8h, memecoin: 4h. Kun tabere lukkes |
+| 1 | Max holdtid | Global cap: 4h (default). Kun tabere/breakeven lukkes, vindere koerer |
 | 2 | Early exit | 3+ accelererende adverse candles → luk 50-100% |
 | 3 | Break-even | Flyt SL til entry ved +1.5% |
 | 3b | Progressive SL | Trail 1.0% bag pris, server-side, min 0.3% step |
@@ -282,6 +322,26 @@ docker compose logs --tail=30 cryptobot-ai
 ---
 
 ## Changelog
+
+### 12-03-2026 (v2): Ubrydelige Python hard gates — fix EUR 576 BTC tab
+
+**Problem:** AI-botten (Haiku) tabte EUR 576 paa BTC ved at handle i ranging marked, selvom den "lovede" at pause. AI kan ikke kontrollere sig selv.
+
+**Root cause:** `_handle_scale_in()` havde NULGATEZ — ingen ADX, R:R, handelstid, circuit breaker eller max positions check. Scale-in trades var helt ubeskyttede. BTC max hold var 24 timer (som "major") i stedet for 4.
+
+**Fix — 3 filer aendret:**
+
+| Fil | Aendring |
+|-----|---------|
+| `src/risk/hard_rules.py` | Alle 7 gates centraliseret. Config-laesning. Spam guard. Startup log. Nye standalone metoder: `check_adx_gate()`, `check_rr_gate()`, `is_trading_hours()`, `is_circuit_breaker_active()`, `pre_trade_gates()` |
+| `main_ai.py` | Alle 3 trade paths (scan, cycle, scale-in) bruger nu SAMME gates. Trading hours + circuit breaker check FØR coin-loop. Scale-in har nu alle 7 gates. |
+| `src/risk/manager.py` | Global `max_hold_hours` cap (default 4h) overskriver per-kategori (BTC 24h → 4h) |
+
+**Gate execution flow:**
+```
+FØR AI-kald:  Handelstid → Circuit breaker → Max pos → Min interval → ADX >= 20
+EFTER AI-svar: R:R >= 2.0 → Risk EUR <= 1.5%
+```
 
 ### 12-03-2026: P/L reconcile fix + Compare page redesign
 

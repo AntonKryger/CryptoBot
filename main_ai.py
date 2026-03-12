@@ -197,6 +197,16 @@ class CryptoBotAI:
             self.running = False
             return
 
+        # ── GLOBAL GATES: Check before any analysis ──
+        if not self.hard_rules.is_trading_hours():
+            logger.info("[AI] TRADING HOURS GATE: Udenfor handelstid, springer scan over")
+            return
+
+        if self.hard_rules.is_circuit_breaker_active():
+            remaining = (self.hard_rules._state["pause_until"] - datetime.now()).total_seconds() / 60
+            logger.info(f"[AI] CIRCUIT BREAKER: Pause aktiv ({remaining:.0f} min), springer scan over")
+            return
+
         # Check if markets are open
         markets_open, market_status = self.client.are_crypto_markets_open()
         if not markets_open:
@@ -258,8 +268,7 @@ class CryptoBotAI:
                 regime, adx = self.regime.get_regime(epic)
 
                 # ── ADX HARD GATE: no trades in choppy markets ──
-                if adx < 20:
-                    logger.info(f"[AI] {epic}: ADX GATE — ADX {adx:.1f} < 20 (choppy market), skipping")
+                if not self.hard_rules.check_adx_gate(epic, adx):
                     continue
 
                 time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
@@ -363,20 +372,10 @@ class CryptoBotAI:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
-                # ── R:R HARD GATE: minimum 1:2 risk/reward ──
-                if signal_type == "BUY":
-                    risk = current_price - stop_loss
-                    reward = take_profit - current_price
-                else:
-                    risk = stop_loss - current_price
-                    reward = current_price - take_profit
-                if risk > 0:
-                    rr_ratio = reward / risk
-                    if rr_ratio < 2.0:
-                        logger.warning(f"[R:R GATE] {epic}: R:R {rr_ratio:.2f}:1 < 2.0 minimum, trade afvist")
-                        continue
-                else:
-                    logger.warning(f"[R:R GATE] {epic}: Invalid risk={risk:.4f}, trade afvist")
+                # ── R:R HARD GATE: minimum risk/reward ──
+                rr_ok, rr_ratio = self.hard_rules.check_rr_gate(current_price, stop_loss, take_profit, signal_type)
+                if not rr_ok:
+                    logger.warning(f"[R:R GATE] {epic}: R:R {rr_ratio:.2f}:1 < {self.hard_rules.min_rr_ratio}:1, trade afvist")
                     continue
 
                 # ── HARD RULES CHECK ──
@@ -455,8 +454,8 @@ class CryptoBotAI:
             regime, adx = self.regime.get_regime(epic)
 
             # ── ADX HARD GATE for cycle trades ──
-            if adx < 20:
-                logger.info(f"[Cycle] {epic}: ADX GATE — ADX {adx:.1f} < 20 (choppy market), no reversal")
+            if not self.hard_rules.check_adx_gate(epic, adx):
+                logger.info(f"[Cycle] {epic}: ADX GATE — no reversal")
                 return
 
             # Get higher-timeframe context
@@ -554,19 +553,9 @@ class CryptoBotAI:
             take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
             # ── R:R HARD GATE for cycle trade ──
-            if signal_type == "BUY":
-                c_risk = current_price - stop_loss
-                c_reward = take_profit - current_price
-            else:
-                c_risk = stop_loss - current_price
-                c_reward = current_price - take_profit
-            if c_risk > 0:
-                c_rr = c_reward / c_risk
-                if c_rr < 2.0:
-                    logger.warning(f"[Cycle] {epic}: R:R {c_rr:.2f}:1 < 2.0 minimum, cycle trade afvist")
-                    return
-            else:
-                logger.warning(f"[Cycle] {epic}: Invalid risk, cycle trade afvist")
+            rr_ok, c_rr = self.hard_rules.check_rr_gate(current_price, stop_loss, take_profit, signal_type)
+            if not rr_ok:
+                logger.warning(f"[Cycle] {epic}: R:R {c_rr:.2f}:1 < {self.hard_rules.min_rr_ratio}:1, cycle trade afvist")
                 return
 
             # Hard rules check for cycle trade
@@ -613,8 +602,25 @@ class CryptoBotAI:
             logger.error(f"[Cycle] Error for {epic}: {e}")
 
     def _handle_scale_in(self, epic, direction, deal_id, entry_confidence, pos):
-        """Called by watchdog to check if scale-in is appropriate."""
+        """Called by watchdog to check if scale-in is appropriate.
+        ALL gates enforced — same as scan cycle and cycle trade."""
         try:
+            # ── PRE-AI GATES (before spending any tokens) ──
+            regime, adx = self.regime.get_regime(epic)
+
+            # Gate 1: ADX — no scale-in in ranging markets
+            if not self.hard_rules.check_adx_gate(epic, adx):
+                logger.info(f"[Scale-in] {epic}: ADX GATE — ADX {adx:.1f} < {self.hard_rules.min_adx}, no scale-in")
+                return
+
+            # Gate 2: Trading hours + circuit breaker + max positions + min interval
+            positions = self.client.get_positions()
+            open_count = len(positions.get("positions", []))
+            gate_ok, gate_reason = self.hard_rules.pre_trade_gates(epic, adx, open_count)
+            if not gate_ok:
+                logger.info(f"[Scale-in] {epic} blokeret: {gate_reason}")
+                return
+
             # Re-evaluate with AI
             prices = self.client.get_prices(epic, resolution=self.timeframe)
             df = self.signals.prepare_dataframe(prices)
@@ -623,9 +629,7 @@ class CryptoBotAI:
 
             df = self.signals.calculate_indicators(df)
 
-            regime, adx = self.regime.get_regime(epic)
             regime_data = {"regime": regime, "adx": adx}
-
             signal_type, details = self.ai.analyze(epic, df, regime_data=regime_data)
             new_confidence = details.get("ai_confidence", 0)
 
@@ -647,6 +651,25 @@ class CryptoBotAI:
                 stop_loss = self.risk.calculate_stop_loss(current_price, direction)
             take_profit = self.risk.calculate_take_profit(current_price, direction, atr_pct, sl_price=stop_loss)
 
+            # ── POST-AI GATES ──
+
+            # Gate 3: R:R minimum
+            rr_ok, rr_ratio = self.hard_rules.check_rr_gate(current_price, stop_loss, take_profit, direction)
+            if not rr_ok:
+                logger.warning(f"[Scale-in] {epic}: R:R {rr_ratio:.2f}:1 < {self.hard_rules.min_rr_ratio}:1, scale-in afvist")
+                return
+
+            # Gate 4: Risk EUR check
+            balance = self.client.get_account_balance()
+            if not balance:
+                return
+            risk_eur = self.hard_rules.calculate_risk_eur(current_price, stop_loss, scale_size)
+            can_trade, rule_reason = self.hard_rules.can_trade(balance["balance"], risk_eur, open_count)
+            if not can_trade:
+                logger.warning(f"[Scale-in] {epic} blokeret af hard rule: {rule_reason}")
+                return
+
+            # ── ALL GATES PASSED — execute scale-in ──
             result = self.client.create_position(
                 epic=epic, direction=direction, size=scale_size,
                 stop_loss=stop_loss, take_profit=take_profit,
@@ -655,18 +678,21 @@ class CryptoBotAI:
             if result:
                 self.watchdog.mark_scale_in_done(deal_id)
                 new_deal_id = result.get("dealReference") or result.get("dealId", "")
-                self.watchdog.track_entry(new_deal_id, epic, new_confidence)
+                self.watchdog.track_entry(new_deal_id, epic, new_confidence, regime=regime)
                 self.executor._log_trade(epic, direction, scale_size, current_price,
                                          stop_loss, take_profit, result, details)
+                self.hard_rules.record_trade_opened()
+                self.position_sync.sync()
 
                 self.notifier.send(
                     f"📈 <b>Scale-in: {epic}</b>\n"
                     f"Original conf: {entry_confidence} -> Ny conf: {new_confidence}\n"
                     f"Tilføjet: {scale_size} (50% af original)\n"
                     f"Pris: EUR {current_price:.4f}\n"
-                    f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}"
+                    f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}\n"
+                    f"R:R: {rr_ratio:.2f}:1 | ADX: {adx:.1f}"
                 )
-                logger.info(f"[Scale-in] {epic}: +{scale_size} (conf {entry_confidence}->{new_confidence})")
+                logger.info(f"[Scale-in] {epic}: +{scale_size} (conf {entry_confidence}->{new_confidence}, ADX={adx:.1f}, R:R={rr_ratio:.2f})")
 
         except Exception as e:
             logger.error(f"[Scale-in] Error for {epic}: {e}")

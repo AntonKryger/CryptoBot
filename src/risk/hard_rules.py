@@ -20,17 +20,31 @@ class HardRules:
         self.notifier = notifier
         self.db_path = config.get("database", {}).get("path", "data_ai/trades.db")
 
-        # Hard limits
-        self.max_risk_pct = 1.5           # Max 1.5% of account per trade
-        self.max_open_positions = 3       # Hard cap
-        self.max_consecutive_losses = 3   # Before forced pause
-        self.loss_pause_minutes = 20      # Pause after 3 losses
-        self.no_trade_before_hour = 8     # CET
-        self.no_trade_after_hour = 22     # CET
-        self.min_trade_interval_minutes = 15
+        # Read from config with safe defaults — these are HARD limits
+        trading_cfg = config.get("trading", {})
+        self.min_adx = trading_cfg.get("min_adx", 20)
+        self.min_rr_ratio = trading_cfg.get("min_rr_ratio", 2.0)
+        self.max_risk_pct = trading_cfg.get("max_risk_pct", 1.5)
+        self.max_open_positions = trading_cfg.get("max_positions", 3)
+        self.max_consecutive_losses = trading_cfg.get("circuit_breaker_losses", 3)
+        self.loss_pause_minutes = trading_cfg.get("circuit_breaker_pause_minutes", 20)
+        self.no_trade_before_hour = trading_cfg.get("trading_hours_start", 8)
+        self.no_trade_after_hour = trading_cfg.get("trading_hours_end", 22)
+        self.min_trade_interval_minutes = trading_cfg.get("min_interval_minutes", 15)
+        self.max_hold_hours = trading_cfg.get("max_hold_hours", 4)
+
+        # Telegram spam guard: max 1 notification per gate type per 30 min
+        self._last_notify = {}  # {reason_prefix: datetime}
 
         self._init_db()
         self._state = self._load_state()
+
+        logger.info(
+            f"[HardRules] Config: ADX>={self.min_adx} | R:R>={self.min_rr_ratio} | "
+            f"MaxPos={self.max_open_positions} | Hours={self.no_trade_before_hour}-{self.no_trade_after_hour} CET | "
+            f"CircuitBreaker={self.max_consecutive_losses}losses/{self.loss_pause_minutes}min | "
+            f"MinInterval={self.min_trade_interval_minutes}min | MaxHold={self.max_hold_hours}h"
+        )
 
     def _init_db(self):
         """Create circuit breaker table if not exists."""
@@ -182,7 +196,103 @@ class HardRules:
             "in_trading_hours": self.no_trade_before_hour <= now_cet.hour < self.no_trade_after_hour,
         }
 
+    # ── Standalone gate checks (usable from any code path) ──
+
+    def check_adx_gate(self, epic, adx):
+        """ADX hard gate. Returns True if ADX is high enough to trade."""
+        if adx < self.min_adx:
+            reason = f"ADX GATE: {epic} blokeret (ADX {adx:.1f} < {self.min_adx})"
+            self._notify_blocked(reason)
+            return False
+        return True
+
+    def check_rr_gate(self, entry, sl, tp, direction):
+        """R:R hard gate. Returns (allowed, rr_ratio)."""
+        if direction == "BUY":
+            risk = entry - sl
+            reward = tp - entry
+        else:
+            risk = sl - entry
+            reward = entry - tp
+
+        if risk <= 0:
+            logger.warning(f"[R:R GATE] Invalid risk={risk:.4f}, trade afvist")
+            return False, 0.0
+
+        rr = reward / risk
+        if rr < self.min_rr_ratio:
+            reason = f"RR GATE: Blokeret (RR {rr:.2f}:1 < {self.min_rr_ratio}:1 minimum)"
+            self._notify_blocked(reason)
+            return False, rr
+
+        return True, rr
+
+    def is_trading_hours(self):
+        """Check if we are in allowed trading hours (CET)."""
+        now_cet = datetime.now(CET)
+        return self.no_trade_before_hour <= now_cet.hour < self.no_trade_after_hour
+
+    def is_circuit_breaker_active(self):
+        """Check if circuit breaker pause is active."""
+        if self._state["pause_until"] and datetime.now() < self._state["pause_until"]:
+            return True
+        return False
+
+    def can_open_new_trade(self):
+        """Check min interval since last trade. Returns True if enough time passed."""
+        if self._state["last_trade_time"]:
+            elapsed = (datetime.now() - self._state["last_trade_time"]).total_seconds() / 60
+            if elapsed < self.min_trade_interval_minutes:
+                return False
+        return True
+
+    def pre_trade_gates(self, epic, adx, open_positions_count):
+        """All pre-AI gates in one call. Returns (allowed, reason)."""
+        # 1. Trading hours
+        if not self.is_trading_hours():
+            now_cet = datetime.now(CET)
+            reason = f"TIDSREGEL: Udenfor handelstid (nu: {now_cet.hour:02d}:{now_cet.minute:02d} CET)"
+            self._notify_blocked(reason)
+            return False, reason
+
+        # 2. Circuit breaker
+        if self.is_circuit_breaker_active():
+            remaining = (self._state["pause_until"] - datetime.now()).total_seconds() / 60
+            reason = f"TABSPAUSE: {self._state['consecutive_losses']} tab i træk, pause {remaining:.0f} min"
+            self._notify_blocked(reason)
+            return False, reason
+
+        # 3. Max positions
+        if open_positions_count >= self.max_open_positions:
+            reason = f"MAX POSITIONER: {open_positions_count}/{self.max_open_positions} åbne"
+            self._notify_blocked(reason)
+            return False, reason
+
+        # 4. Min interval
+        if not self.can_open_new_trade():
+            elapsed = (datetime.now() - self._state["last_trade_time"]).total_seconds() / 60
+            remaining = self.min_trade_interval_minutes - elapsed
+            reason = f"MIN INTERVAL: {remaining:.0f} min til næste trade"
+            self._notify_blocked(reason)
+            return False, reason
+
+        # 5. ADX
+        if not self.check_adx_gate(epic, adx):
+            return False, f"ADX GATE: {epic} ADX {adx:.1f} < {self.min_adx}"
+
+        return True, "OK"
+
     def _notify_blocked(self, reason):
-        """Send Telegram notification when a rule blocks a trade."""
+        """Send Telegram notification when a rule blocks a trade. Max 1 per type per 30 min."""
+        # Extract gate type prefix for spam control
+        prefix = reason.split(":")[0] if ":" in reason else reason[:20]
+        now = datetime.now()
+        last = self._last_notify.get(prefix)
+        if last and (now - last).total_seconds() < 1800:
+            # Already notified recently, just log
+            logger.warning(f"[HardRules] Blocked (silent): {reason}")
+            return
+
+        self._last_notify[prefix] = now
         self.notifier.send(f"🚫 <b>HARD RULE BLOKERET</b>\n{reason}")
         logger.warning(f"[HardRules] Blocked: {reason}")

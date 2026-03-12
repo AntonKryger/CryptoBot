@@ -39,12 +39,15 @@ class RiskManager:
         self.atr_sl_max_pct = risk_cfg.get("atr_sl_max_pct", 8.0)
 
         # Max hold time per category (hours)
+        # Global override from trading.max_hold_hours (default 4h for ALL coins)
+        global_max_hold = config.get("trading", {}).get("max_hold_hours", 4)
         hold_cfg = risk_cfg.get("max_hold_hours", {})
         self.max_hold_hours = {
-            "major": hold_cfg.get("major", 24),
-            "altcoin": hold_cfg.get("altcoin", 8),
-            "memecoin": hold_cfg.get("memecoin", 4),
+            "major": min(hold_cfg.get("major", 24), global_max_hold),
+            "altcoin": min(hold_cfg.get("altcoin", 8), global_max_hold),
+            "memecoin": min(hold_cfg.get("memecoin", 4), global_max_hold),
         }
+        logger.info(f"[RiskManager] Max hold hours: {self.max_hold_hours} (global cap: {global_max_hold}h)")
 
         # Capital allocation limits (% of total balance)
         alloc_cfg = risk_cfg.get("allocation", {})

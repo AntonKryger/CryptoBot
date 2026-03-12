@@ -29,6 +29,15 @@ docker compose down && docker compose up -d --build
 - `dealReference` from create_position is NOT the same as `dealId` from positions API. Use `/api/v1/confirms/{dealRef}` to get real dealId.
 - CryptoPanic API rate-limits aggressively. Both bots share the same API key.
 
+## Hard Gates (AI Bot)
+ALL trade paths in `main_ai.py` (scan cycle, cycle trade, scale-in) MUST go through the same Python gates in `src/risk/hard_rules.py`. Haiku's decision is only valid if Python says go.
+
+**Pre-AI:** Trading hours → Circuit breaker → Max positions → Min interval → ADX >= 20
+**Post-AI:** R:R >= 2.0 → Risk EUR <= 1.5%
+
+All values configurable in `config_ai.yaml` under `trading:` section. Safe defaults if not set.
+Never add a new trade path without enforcing ALL gates. Scale-in was missing all gates and caused EUR 576 loss on 2026-03-12.
+
 ## Testing
 No test framework. Verify changes by checking Docker logs after deploy:
 ```bash
