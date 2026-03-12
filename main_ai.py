@@ -27,6 +27,7 @@ from src.strategy.trade_journal import TradeJournal
 from src.strategy.post_trade_analyzer import PostTradeAnalyzer
 from src.strategy.technical_analysis import MultiTFAnalysis
 from src.strategy.sentiment_pipeline import SentimentPipeline
+from src.executor.positions_sync import PositionSync
 from src.analysis.weekly_evaluator import WeeklyEvaluator
 
 # ── Logging setup ───────────────────────────────────────────────────
@@ -70,9 +71,14 @@ class CryptoBotAI:
         self.watchdog.executor = self.executor
         self.watchdog.time_bias = self.time_bias  # For sentiment-based night mode
         self.watchdog.mtf = self.mtf  # For daily trend context in exits
-        # Give AI access to trade history and news for feedback loop
+        # Real-time portfolio sync (Capital.com → SQLite → AI prompts)
+        self.position_sync = PositionSync(self.client, self.config)
+        self.position_sync.sync()  # Initial sync immediately
+
+        # Give AI access to trade history, news, and portfolio for feedback loop
         self.ai.trade_executor = self.executor
         self.ai.news_monitor = self.news
+        self.ai.position_sync = self.position_sync
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
 
@@ -140,6 +146,9 @@ class CryptoBotAI:
         self.notifier.register_chat_handler(self._handle_chat)
         self.notifier.start_command_listener()
 
+        # Start real-time portfolio sync (every 30s)
+        self.position_sync.start_background_sync()
+
         # Start position watchdog (fast monitoring every 10-15 sec)
         self.watchdog.start()
 
@@ -170,6 +179,9 @@ class CryptoBotAI:
         Pass 2: Allocate capital by confidence, execute trades
         """
         logger.info(f"[AI] Scanner {len(self.coins)} coins...")
+
+        # Sync portfolio before any decisions
+        self.position_sync.sync()
 
         # Check kill switch
         balance = self.client.get_account_balance()
@@ -385,6 +397,7 @@ class CryptoBotAI:
                                              journal_data=journal_data)
                     self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
                     self.hard_rules.record_trade_opened()
+                    self.position_sync.sync()  # Immediate sync after opening
 
                     # Track in watchdog for max hold time, scale-in, and trend-aware exit
                     deal_id = result.get("dealReference") or result.get("dealId", "")
@@ -401,6 +414,9 @@ class CryptoBotAI:
     def _handle_cycle_trade(self, epic, opposite_direction, closed_pl_pct=0):
         """Called by watchdog when a position closes - check for reversal trade."""
         try:
+            # Sync portfolio immediately (position just closed)
+            self.position_sync.sync()
+
             # Set cooldown immediately to prevent scan cycle from also opening
             self.executor._recently_traded[epic] = datetime.now()
 
@@ -920,6 +936,9 @@ class CryptoBotAI:
 
     def _handle_chat(self, text, image_data=None):
         """Handle free-text chat messages via Telegram."""
+        # Sync portfolio before any AI response
+        self.position_sync.sync()
+
         # Check for weekly evaluation approval/rejection
         approval_response = self.evaluator.handle_approval(text)
         if approval_response:

@@ -61,6 +61,7 @@ class AIAnalyst:
         self._request_delay = 1.0  # seconds between API calls
         self.trade_executor = None  # Set by main_ai.py for recent P/L feedback
         self.news_monitor = None    # Set by main_ai.py for breaking news
+        self.position_sync = None   # Set by main_ai.py for portfolio awareness
         self.rule_db_path = ai_cfg.get("rule_db_path", "data/trades.db")  # Rule bot DB for cross-learning
 
         # Chat conversation state (persisted to SQLite)
@@ -355,7 +356,15 @@ class AIAnalyst:
         else:
             trend_pattern = f"MIXED: {green_count} green / {red_count} red in last 12h"
 
-        prompt = f"""Analyze {epic} for a potential trade:
+        # Portfolio context — FIRST section so AI always knows current state
+        portfolio_text = ""
+        if self.position_sync:
+            try:
+                portfolio_text = self.position_sync.format_for_prompt() + "\n\n"
+            except Exception as e:
+                logger.debug(f"Portfolio format error: {e}")
+
+        prompt = f"""{portfolio_text}Analyze {epic} for a potential trade:
 
 PRICE: {latest['close']:.4f}
 24h CHANGE: {change_24h:+.2f}%
@@ -869,9 +878,17 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
             for fb in feedback_items:
                 feedback_text += f"- [{fb['category']}] {fb['feedback']}\n"
 
+        # Inject live portfolio into chat system prompt
+        portfolio_text = ""
+        if self.position_sync:
+            try:
+                portfolio_text = "\n" + self.position_sync.format_for_prompt() + "\n"
+            except Exception:
+                pass
+
         chat_system = f"""Du er en erfaren krypto-CFD-trader der styrer en automatiseret handelsbot.
 Du taler dansk. Du er direkte, ærlig og forklarer dine beslutninger klart.
-
+{portfolio_text}
 DIN ROLLE:
 - Forklar dine handelsbeslutninger og analyse
 - Accepter feedback fra brugeren og lær af det
