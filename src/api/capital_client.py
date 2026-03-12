@@ -97,18 +97,23 @@ class CapitalClient:
         return resp.json() if resp.content else None
 
     def _switch_account(self, account_name):
-        """Switch to a specific account by name."""
-        try:
-            data = self._request("GET", "/api/v1/accounts")
-            for account in data.get("accounts", []):
-                if account.get("accountName", "").lower() == account_name.lower():
-                    account_id = account["accountId"]
-                    self._request("PUT", "/api/v1/session", json={"accountId": account_id})
-                    logger.info(f"Switched to account: {account_name} (ID: {account_id})")
-                    return
-            logger.warning(f"Account '{account_name}' not found, using default")
-        except Exception as e:
-            logger.error(f"Failed to switch account: {e}")
+        """Switch to a specific account by name. FATAL if account not found."""
+        data = self._request("GET", "/api/v1/accounts")
+        available_names = []
+        for account in data.get("accounts", []):
+            name = account.get("accountName", "")
+            available_names.append(name)
+            if name.lower() == account_name.lower():
+                account_id = account["accountId"]
+                self._request("PUT", "/api/v1/session", json={"accountId": account_id})
+                logger.info(f"Switched to account: {account_name} (ID: {account_id})")
+                return
+        # HARD FAIL: never silently fall back to default account
+        raise RuntimeError(
+            f"FATAL: Account '{account_name}' not found! "
+            f"Available accounts: {available_names}. "
+            f"Bot STOPPED to prevent trading on wrong account."
+        )
 
     # ── Account info ────────────────────────────────────────────────
 
