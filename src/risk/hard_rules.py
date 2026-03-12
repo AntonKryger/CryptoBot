@@ -282,6 +282,35 @@ class HardRules:
 
         return True, "OK"
 
+    def pre_trade_gates_scalper(self, epic, open_positions_count):
+        """Pre-trade gates for RangeScalper — skips ADX gate (scalper trades ranging markets).
+        Enforces: trading hours, circuit breaker, max positions, min interval."""
+        # 1. Trading hours
+        if not self.is_trading_hours():
+            now_cet = datetime.now(CET)
+            reason = f"TIDSREGEL: Udenfor handelstid (nu: {now_cet.hour:02d}:{now_cet.minute:02d} CET)"
+            return False, reason
+
+        # 2. Circuit breaker
+        if self.is_circuit_breaker_active():
+            remaining = (self._state["pause_until"] - datetime.now()).total_seconds() / 60
+            reason = f"TABSPAUSE: {self._state['consecutive_losses']} tab i træk, pause {remaining:.0f} min"
+            return False, reason
+
+        # 3. Max positions
+        if open_positions_count >= self.max_open_positions:
+            reason = f"MAX POSITIONER: {open_positions_count}/{self.max_open_positions} åbne"
+            return False, reason
+
+        # 4. Min interval
+        if not self.can_open_new_trade():
+            elapsed = (datetime.now() - self._state["last_trade_time"]).total_seconds() / 60
+            remaining = self.min_trade_interval_minutes - elapsed
+            reason = f"MIN INTERVAL: {remaining:.0f} min til næste trade"
+            return False, reason
+
+        return True, "OK"
+
     def _notify_blocked(self, reason):
         """Send Telegram notification when a rule blocks a trade. Max 1 per type per 30 min."""
         # Extract gate type prefix for spam control

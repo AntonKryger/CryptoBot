@@ -457,6 +457,8 @@ class CryptoBotAI:
         if self.hard_rules.is_circuit_breaker_active():
             return
 
+        logger.info(f"[Scalper] Scanning {len(self.coins)} coins...")
+
         # Get current positions
         positions = self.client.get_positions()
         if positions is None:
@@ -473,6 +475,7 @@ class CryptoBotAI:
         current_balance = balance["balance"]
         available = balance.get("available", current_balance)
 
+        signals_found = 0
         for epic in self.coins:
             try:
                 # Get 5-minute candles for scalper
@@ -502,16 +505,17 @@ class CryptoBotAI:
 
                 action = signal["action"]
                 confidence = signal["confidence"]
+                reason = signal.get("reason", "")
 
                 if action == "HOLD" or confidence < self.scalper._min_confidence:
-                    if action != "HOLD":
-                        logger.debug(f"[Scalper] {epic}: {action} conf {confidence} < min, skipping")
+                    logger.debug(f"[Scalper] {epic}: {action} (conf {confidence}) — {reason}")
                     continue
 
-                # ── HARD RULES CHECK ──
-                # Get ADX from regime detector for hard gate
-                regime, adx = self.regime.get_regime(epic)
-                gate_ok, gate_reason = self.hard_rules.pre_trade_gates(epic, adx, len(open_positions))
+                signals_found += 1
+                logger.info(f"[Scalper] {epic}: {action} (conf {confidence}) — {reason}")
+
+                # ── HARD RULES CHECK (no ADX gate — scalper trades ranging markets) ──
+                gate_ok, gate_reason = self.hard_rules.pre_trade_gates_scalper(epic, len(open_positions))
                 if not gate_ok:
                     logger.info(f"[Scalper] {epic}: Hard gate blocked — {gate_reason}")
                     continue
@@ -571,7 +575,7 @@ class CryptoBotAI:
                     self.position_sync.sync()
 
                     deal_id = result.get("dealReference") or result.get("dealId", "")
-                    self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
+                    self.watchdog.track_entry(deal_id, epic, confidence, regime="RANGING")
 
                     emoji = "🟢" if action == "BUY" else "🔴"
                     self.notifier.send(
@@ -584,6 +588,9 @@ class CryptoBotAI:
 
             except Exception as e:
                 logger.error(f"[Scalper] Error for {epic}: {e}")
+
+        if signals_found == 0:
+            logger.info("[Scalper] Ingen actionable signals denne runde")
 
     def _handle_cycle_trade(self, epic, opposite_direction, closed_pl_pct=0):
         """Called by watchdog when a position closes - check for reversal trade."""
