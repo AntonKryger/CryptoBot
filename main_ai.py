@@ -25,6 +25,8 @@ from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
 from src.strategy.trade_journal import TradeJournal
 from src.strategy.post_trade_analyzer import PostTradeAnalyzer
+from src.strategy.technical_analysis import MultiTFAnalysis
+from src.strategy.sentiment_pipeline import SentimentPipeline
 from src.analysis.weekly_evaluator import WeeklyEvaluator
 
 # ── Logging setup ───────────────────────────────────────────────────
@@ -73,6 +75,10 @@ class CryptoBotAI:
         self.ai.news_monitor = self.news
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
+
+        # Multi-TF alignment (15m/1H/4H) and async sentiment pipeline
+        self.multi_tf = MultiTFAnalysis(self.client, self.signals)
+        self.sentiment_pipeline = SentimentPipeline(self.config)
 
         # Self-learning modules
         self.journal = TradeJournal(self.config)
@@ -246,13 +252,29 @@ class CryptoBotAI:
                 except Exception as e:
                     logger.warning(f"[AI] MTF failed for {epic}: {e}")
 
+                # Get multi-TF alignment (15m/1H/4H)
+                alignment_data = None
+                try:
+                    alignment_data = self.multi_tf.get_alignment(epic)
+                except Exception as e:
+                    logger.warning(f"[AI] Multi-TF alignment failed for {epic}: {e}")
+
+                # Get sentiment pipeline (async, never blocks)
+                pipeline_data = None
+                try:
+                    pipeline_data = self.sentiment_pipeline.get_sentiment(epic)
+                except Exception as e:
+                    logger.warning(f"[AI] Sentiment pipeline failed for {epic}: {e}")
+
                 regime_data = {
                     "regime": regime, "adx": adx,
                     "time_bias": time_bias_label, "time_bias_return": time_bias_return,
                     "htf_context": htf_context,
+                    "alignment": alignment_data,
+                    "sentiment_pipeline": pipeline_data,
                 }
 
-                # Get sentiment data
+                # Get sentiment data (legacy reddit)
                 sentiment_data = None
                 try:
                     sentiment_data = self.signals.reddit.get_sentiment(epic)
@@ -401,7 +423,24 @@ class CryptoBotAI:
             except Exception:
                 pass
 
-            regime_data = {"regime": regime, "adx": adx, "htf_context": htf_context}
+            # Get multi-TF alignment for cycle trade
+            alignment_data = None
+            try:
+                alignment_data = self.multi_tf.get_alignment(epic)
+            except Exception:
+                pass
+
+            # Get sentiment pipeline for cycle trade
+            pipeline_data = None
+            try:
+                pipeline_data = self.sentiment_pipeline.get_sentiment(epic)
+            except Exception:
+                pass
+
+            regime_data = {
+                "regime": regime, "adx": adx, "htf_context": htf_context,
+                "alignment": alignment_data, "sentiment_pipeline": pipeline_data,
+            }
 
             # Get sentiment
             sentiment_data = None

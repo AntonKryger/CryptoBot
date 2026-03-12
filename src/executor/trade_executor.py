@@ -66,6 +66,7 @@ class TradeExecutor:
             ("journal_market_condition", "TEXT"),
             ("post_analysis", "TEXT"),
             ("post_analysis_timestamp", "TEXT"),
+            ("alignment_score", "INTEGER"),
         ]:
             try:
                 db.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
@@ -204,11 +205,14 @@ class TradeExecutor:
         j_why = journal_data.get("why", "") if journal_data else None
         j_target = journal_data.get("expected_target") if journal_data else None
         j_condition = journal_data.get("market_condition") if journal_data else None
+        # Extract alignment score from details
+        alignment_score = details.get("alignment_score") if isinstance(details, dict) else None
         db.execute("""
             INSERT INTO trades (timestamp, epic, direction, size, entry_price,
                                 stop_loss, take_profit, deal_id, status, signal_details, source,
-                                journal_why, journal_expected_target, journal_market_condition)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?)
+                                journal_why, journal_expected_target, journal_market_condition,
+                                alignment_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?, ?)
         """, (
             datetime.now().isoformat(),
             epic,
@@ -222,10 +226,11 @@ class TradeExecutor:
             j_why,
             j_target,
             j_condition,
+            alignment_score,
         ))
         db.commit()
         db.close()
-        logger.info(f"Trade logged: {signal} {epic} x{size} @ {price}")
+        logger.info(f"Trade logged: {signal} {epic} x{size} @ {price} (alignment: {alignment_score})")
 
     def update_trade_close(self, deal_id, exit_price, profit_loss, partial=False, epic=None):
         """Update a trade record when position is closed by watchdog.

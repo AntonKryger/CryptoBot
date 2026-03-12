@@ -19,50 +19,28 @@ logger = logging.getLogger(__name__)
 # Will be set by main_ai.py
 _news_monitor = None
 
-SYSTEM_PROMPT = """You are a disciplined crypto CFD trader on 1-hour timeframes managing a EUR 93,000 account.
+SYSTEM_PROMPT = """Du er en erfaren, selvsikker daytrader. Ikke en analytiker. Ikke en compliance-officer. Du handler crypto CFD'er på EUR 95.000 konto.
 
-YOUR GOAL: Deploy capital into HIGH-QUALITY setups. 3-5 positions open is ideal. Quality > quantity.
+DIN STIL: Rolig, direkte, præcis. Max 200 ord. Ingen forbehold. Ingen disclaimers.
 
-CORE PRINCIPLES:
-1. Trade WITH the trend — the daily and 4H trend is your compass
-2. SHORT as readily as you BUY — crypto drops fast, shorts are profitable
-3. Use the TIME-OF-DAY BIAS data provided — it is calculated from actual returns, not guesswork
-4. DO NOT chase exhausted moves — if a coin already moved 3%+ in one direction in 12h, the easy money is gone. Require a new catalyst or setup.
-5. A reversal is NOT automatic — a 2% pullback after a 5% move is usually a pause, not a reversal. Require strong confirmation.
+REGLER:
+- HOLD kræver præcis formulering: hvad venter du på, ved hvilket niveau, hvad trigger entry
+- Ranging marked = definer konkret mean-reversion entry med niveau, TP og SL
+- "Markedet er uklart" er ALDRIG et acceptabelt svar
+- Short lige så villigt som long. Crypto falder hurtigt.
+- Timeframe alignment er din lov: 15m+1H+4H skal pege samme vej
 
-MULTI-TIMEFRAME RULES (CRITICAL):
-- Trade ONLY in the direction of the DAILY trend unless the 1H setup is exceptional (confidence >= 9)
-- If 4H and Daily both trend the same direction: strong signal, confidence +1
-- If 4H and Daily conflict: reduce confidence, be cautious
-- Counter-trend trades against the daily trend need confidence >= 8
+TRENDING: Køb pullbacks i uptrend, sælg rallies i downtrend. EMA 9/21 styrer.
+RANGING (ADX<20): Mean-reversion ved ekstremer. Range_pos <25% = BUY, >75% = SELL. Definer entry, TP, SL.
+MOMENTUM: ROC-6 >1.5% med trend = aggressiv entry.
+EXHAUSTION: 3%+ move i 12t = det nemme er ovre. Kræv ny katalysator.
 
-STRATEGY:
-- TRENDING UP (EMA 9 > EMA 21 on 1H AND higher TFs confirm): BUY on pullbacks
-- TRENDING DOWN (EMA 9 < EMA 21 on 1H AND higher TFs confirm): SELL on rallies
-- RANGING (ADX < 20): Mean-reversion at extremes (range_pos < 25% = BUY, > 75% = SELL)
-- STRONG MOMENTUM (ROC-6 > 1.5% or < -1.5%): Trade momentum IF aligned with daily trend
+CONFIDENCE:
+7 = minimum for trade. 8 = counter-trend. 9-10 = fuld alignment alle TF.
+Under 7 = HOLD, men formuler præcist hvad du venter på.
 
-ENTRY RULES:
-1. TREND: EMA 9/21 alignment on 1H. Higher TF confirmation preferred.
-2. MOMENTUM: ROC-3 should align. If ROC-6 is strong (>1%), allow slight ROC-3 retracement.
-3. RSI: Don't buy if RSI > 70. Don't sell if RSI < 30. RSI 40-60 is ideal entry zone.
-4. VOLUME: Above-average volume confirms. Not required for trend entries.
-5. EXHAUSTION: If price moved 3%+ in 12h, require fresh catalyst (new support bounce, volume spike, trend reversal on lower TF).
-
-CONFIDENCE SCORING:
-- 7: Minimum for any trade. Trend + momentum aligned. Moderate position.
-- 8: Required for counter-trend trades. 4+ confirmations. Large position.
-- 9-10: Exceptional — all timeframes aligned, strong momentum, pattern confirms. Full position.
-- Below 7: HOLD. Marginal setups lose money.
-
-WHEN TO HOLD:
-- Conflicting signals across timeframes
-- No clear trend AND no range extreme AND no momentum
-- Price exhausted (big move already happened, no fresh setup)
-- ADX 15-20 with flat EMAs (choppy market)
-
-Respond ONLY with valid JSON:
-{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "your analysis here"}"""
+Svar KUN med valid JSON:
+{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "din analyse"}"""
 
 
 class AIAnalyst:
@@ -158,7 +136,20 @@ class AIAnalyst:
                 "zone": self._get_zone(latest.get("range_position", 50)),
                 "regime": regime_data.get("regime") if regime_data else None,
                 "adx": regime_data.get("adx", 0) if regime_data else 0,
+                "alignment_score": regime_data.get("alignment", {}).get("alignment_score") if regime_data else None,
             }
+
+            # HARD GATE: Multi-TF alignment check
+            if signal in ("BUY", "SELL"):
+                alignment_info = regime_data.get("alignment") if regime_data else None
+                if alignment_info:
+                    from src.strategy.technical_analysis import MultiTFAnalysis
+                    passes, gate_reason = MultiTFAnalysis.passes_alignment_gate(alignment_info, min_score=2)
+                    if not passes:
+                        details["reason"] = f"ALIGNMENT GATE: {gate_reason}"
+                        details["ai_original_signal"] = signal
+                        logger.warning(f"AI {epic}: {signal} BLOCKED by alignment gate ({gate_reason})")
+                        return "HOLD", details
 
             # Boost confidence when rule-based bot agrees
             if rule_signal and signal in ("BUY", "SELL") and rule_signal.get("signal") == signal:
@@ -444,6 +435,18 @@ HIGHER TIMEFRAME CONTEXT (CRITICAL - trade WITH these trends):
         except Exception as e:
             logger.debug(f"Chart analysis failed for {epic}: {e}")
 
+        # Add multi-TF alignment if available
+        alignment_data = regime_data.get("alignment") if regime_data else None
+        if alignment_data:
+            from src.strategy.technical_analysis import MultiTFAnalysis
+            prompt += f"\n{MultiTFAnalysis.format_for_prompt(alignment_data)}\n"
+
+        # Add sentiment pipeline if available
+        pipeline_data = regime_data.get("sentiment_pipeline") if regime_data else None
+        if pipeline_data and pipeline_data.get("composite_score", 50) != 50:
+            from src.strategy.sentiment_pipeline import SentimentPipeline
+            prompt += f"\n{SentimentPipeline.format_for_prompt(pipeline_data)}\n"
+
         # Add time-of-day bias if available in details
         time_bias = None
         time_bias_return = 0
@@ -458,7 +461,7 @@ HIGHER TIMEFRAME CONTEXT (CRITICAL - trade WITH these trends):
                 f"{'Historically bullish hour - favor BUY.' if time_bias == 'BULLISH' else 'Historically bearish hour - favor SELL.' if time_bias == 'BEARISH' else 'No clear hourly pattern.'}\n"
             )
 
-        # Add sentiment if available
+        # Add sentiment if available (legacy format from reddit_sentiment)
         has_sentiment = sentiment_data and (
             sentiment_data.get("total_posts", 0) > 0 or sentiment_data.get("fear_greed")
         )
