@@ -794,7 +794,12 @@ VIGTIGT: Returner KUN plain text. Brug IKKE JSON, kodeblokke eller andet format.
                 return []
 
             # Token guard: rough estimate 1 token ~= 4 chars
-            messages = [{"role": role, "content": msg} for role, msg in rows]
+            # Filter out empty messages (causes API 400 error)
+            messages = [
+                {"role": role, "content": msg}
+                for role, msg in rows
+                if msg and msg.strip()
+            ]
             total_chars = sum(len(m["content"]) for m in messages)
             estimated_tokens = total_chars // 4
 
@@ -891,29 +896,32 @@ VIGTIGT: Returner KUN plain text. Brug IKKE JSON, kodeblokke eller andet format.
             except Exception as e:
                 logger.error(f"[Chat] Portfolio inject failed: {e}")
 
-        chat_system = f"""Du er en erfaren krypto-CFD-trader der styrer en automatiseret handelsbot.
+        chat_system = f"""Du er en erfaren krypto-CFD-trader. Direkte, rolig, praecis. Ingen teater.
 
-SPROG: Du skriver UDELUKKENDE på dansk i alle svar. Tekniske termer, indikatorer og trading-data må gerne være på engelsk (RSI, MACD, EMA, Bullish, Bearish, Stop Loss, Take Profit osv.). Aldrig norsk eller svensk — kun dansk og engelsk.
-
-Du er direkte, ærlig og forklarer dine beslutninger klart.
+SPROG: Dansk. Tekniske termer paa engelsk er OK (RSI, MACD, EMA, Stop Loss osv.).
 {portfolio_text}
+STIL-REGLER (VIGTIGSTE):
+- MAKS 150 ord per svar. Overskrid ALDRIG dette.
+- Ingen emoji-overskrifter. Maks 2 emojis per svar.
+- Ingen markdown-headers (#). Brug kun fed tekst (**bold**) sparsomt.
+- Sig det EN gang. Gentag ALDRIG dig selv.
+- Ingen selvros, ingen dramatik, ingen "BRILLANT", "PERFEKT", "KRITISK ERKENDELSE".
+- Svar som en erfaren trader der taler med sin partner — kort, praecist, respektfuldt.
+- Hvis du ikke ved noget, sig "det ved jeg ikke" — maks 5 ord.
+
 DIN ROLLE:
-- Forklar dine handelsbeslutninger og analyse
-- Accepter feedback fra brugeren og lær af det
-- Vær ærlig om fejl og tabende handler
-- Del din markedsopfattelse og strategi
-- Hjælp brugeren med at forstå teknisk analyse
+- Forklar beslutninger kort og klart
+- Accepter feedback, laer af det
+- Vaer aerlig om fejl uden at overdramatisere
+- Brug DINE DATA — du har adgang til indikatorer, priser, regime. Spoerg ikke brugeren om data du selv kan slaa op.
 
-Brugeren kan give dig feedback med "husk: ..." for at gemme regler du skal følge.
-Brugeren kan skrive "regler" for at se aktive feedback-regler.
+FORBUDT:
+- Lange bullet-lister der gentager samme pointe
+- "Skal jeg goere X?" naar brugeren allerede har sagt ja
+- Kodeblokke med pseudokode (du er trader, ikke programmor)
+- At spoerge brugeren om pris/RSI/ADX naar du selv har det i din kontekst
 
-VIGTIGE REGLER:
-- Svar ALTID på dansk
-- Hold svar under 600 ord
-- Vær konkret, undgå vage svar
-- Hvis du ikke ved noget, sig det
-- Referer til konkrete trades og tal når muligt
-- Hvis brugeren sender et billede/chart, analyser det grundigt (trends, patterns, S/R, indikatorer)
+Feedback-kommandoer: "husk: ..." gemmer regel, "regler" viser aktive.
 {feedback_text}"""
 
         # Load persistent conversation history from SQLite (last 24h)
@@ -940,16 +948,18 @@ VIGTIGE REGLER:
             self._rate_limit()
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=800,
+                max_tokens=400,
                 system=chat_system,
                 messages=messages,
             )
 
             reply = response.content[0].text.strip()
 
-            # Persist both messages to SQLite
-            self._save_chat_message("user", user_message)
-            self._save_chat_message("assistant", reply)
+            # Persist both messages to SQLite (skip empty)
+            if user_message and user_message.strip():
+                self._save_chat_message("user", user_message)
+            if reply and reply.strip():
+                self._save_chat_message("assistant", reply)
 
             return reply
 
