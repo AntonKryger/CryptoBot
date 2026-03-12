@@ -21,6 +21,8 @@ _news_monitor = None
 
 SYSTEM_PROMPT = """Du er en erfaren, selvsikker daytrader. Ikke en analytiker. Ikke en compliance-officer. Du handler crypto CFD'er på EUR 95.000 konto.
 
+SPROG: Du skriver UDELUKKENDE på dansk i alle svar. Tekniske termer, indikatorer og trading-data må gerne være på engelsk (RSI, MACD, EMA, Bullish, Bearish, Stop Loss, Take Profit osv.). Aldrig norsk eller svensk — kun dansk og engelsk.
+
 DIN STIL: Rolig, direkte, præcis. Max 200 ord. Ingen forbehold. Ingen disclaimers.
 
 REGLER:
@@ -648,11 +650,13 @@ RULE-BASED BOT SIGNAL:
         latest = df.iloc[-1]
         prompt = self._build_prompt(epic, df, sentiment_data, rule_signal=rule_signal, regime_data=regime_data)
 
-        report_system = """You are an expert crypto trading analyst writing a detailed report in Danish.
+        report_system = """Du er en ekspert crypto trading-analytiker der skriver detaljerede rapporter.
 
-Analyze the market data and write a structured report that explains your reasoning step by step.
+SPROG: Du skriver UDELUKKENDE på dansk. Tekniske termer, indikatorer og trading-data må gerne være på engelsk (RSI, MACD, EMA, Bullish, Bearish, Stop Loss, Take Profit osv.). Aldrig norsk eller svensk — kun dansk og engelsk.
 
-Write the report in this exact format (use plain text, no markdown):
+Analysér markedsdata og skriv en struktureret rapport der forklarer din ræsonnering trin for trin.
+
+Skriv rapporten i dette format (plain text, ingen markdown):
 
 ANALYSE RAPPORT: {epic}
 Dato: {current date/time}
@@ -692,9 +696,9 @@ Dato: {current date/time}
 - Confidence: X/10
 - Begrundelse i 2-3 saetninger
 
-Keep it concise but informative. Max 400 words.
+Hold det kortfattet men informativt. Max 400 ord.
 
-IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any other format. Just write the report directly."""
+VIGTIGT: Returner KUN plain text. Brug IKKE JSON, kodeblokke eller andet format. Skriv rapporten direkte."""
 
         try:
             self._rate_limit()
@@ -888,7 +892,10 @@ IMPORTANT: Return ONLY plain text. Do NOT wrap in JSON, code blocks, or any othe
                 logger.error(f"[Chat] Portfolio inject failed: {e}")
 
         chat_system = f"""Du er en erfaren krypto-CFD-trader der styrer en automatiseret handelsbot.
-Du taler dansk. Du er direkte, ærlig og forklarer dine beslutninger klart.
+
+SPROG: Du skriver UDELUKKENDE på dansk i alle svar. Tekniske termer, indikatorer og trading-data må gerne være på engelsk (RSI, MACD, EMA, Bullish, Bearish, Stop Loss, Take Profit osv.). Aldrig norsk eller svensk — kun dansk og engelsk.
+
+Du er direkte, ærlig og forklarer dine beslutninger klart.
 {portfolio_text}
 DIN ROLLE:
 - Forklar dine handelsbeslutninger og analyse

@@ -161,7 +161,7 @@ Svar KUN med valid JSON:
             response = self.ai.client.messages.create(
                 model=self.ai.model,
                 max_tokens=500,
-                system="Du er en trading-coach. Vær ærlig, konkret og handlingsorienteret. Svar KUN med JSON.",
+                system="Du er en trading-coach. Du skriver UDELUKKENDE på dansk. Tekniske termer må gerne være på engelsk (RSI, MACD, EMA, Stop Loss osv.). Aldrig norsk eller svensk. Vær ærlig, konkret og handlingsorienteret. Svar KUN med JSON.",
                 messages=[{"role": "user", "content": prompt}],
             )
 
