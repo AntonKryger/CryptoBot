@@ -151,32 +151,48 @@ class TelegramNotifier:
         try:
             response = self._chat_handler(text, image_data=image_data)
             if response:
-                # Split long responses for Telegram's 4096 char limit
+                # Chat responses are plain text from AI — never parse as HTML
                 if len(response) > 4000:
                     parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
                     for part in parts:
-                        self.send(part)
+                        self.send(part, parse_mode=None)
                 else:
-                    self.send(response)
+                    self.send(response, parse_mode=None)
         except Exception as e:
             logger.error(f"Chat handler error: {e}")
             self.send(f"Fejl i chat: {e}")
 
     # ── Send messages ────────────────────────────────────────────
 
-    def send(self, message):
+    def send(self, message, parse_mode="HTML"):
         """Send a message to the configured Telegram chat."""
         if not self.enabled:
             logger.debug(f"Telegram disabled, would send: {message}")
             return
 
         try:
-            resp = requests.post(f"{self.base_url}/sendMessage", json={
+            payload = {
                 "chat_id": self.chat_id,
                 "text": message,
-                "parse_mode": "HTML",
-            })
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            resp = requests.post(f"{self.base_url}/sendMessage", json=payload)
             resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            if "400" in str(e) and parse_mode == "HTML":
+                # HTML parse failed (likely < > in text) — retry without parse_mode
+                logger.warning(f"Telegram HTML parse failed, retrying as plain text")
+                try:
+                    resp2 = requests.post(f"{self.base_url}/sendMessage", json={
+                        "chat_id": self.chat_id,
+                        "text": message,
+                    })
+                    resp2.raise_for_status()
+                except Exception as e2:
+                    logger.error(f"Telegram send failed (plain fallback): {e2}")
+            else:
+                logger.error(f"Telegram send failed: {e}")
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
 
