@@ -88,6 +88,7 @@ class AIAnalyst:
         # Chat conversation state
         self._conversation_history = []  # [{role, content}] - capped at 20
         self._max_history = 20
+        self._active_strategies = []  # Set by main_ai.py from weekly evaluator
         self._feedback_db_path = config.get("database", {}).get("path", "data_ai/trades.db")
         self._init_feedback_table()
 
@@ -610,6 +611,12 @@ RULE-BASED BOT SIGNAL:
 
             except Exception as e:
                 logger.debug(f"Trade feedback error: {e}")
+
+        # Inject approved weekly strategy rules
+        if self._active_strategies:
+            prompt += "\n\nAPPROVED WEEKLY STRATEGY RULES (follow these):\n"
+            for rule in self._active_strategies:
+                prompt += f"- {rule}\n"
 
         # Inject user feedback/training rules
         user_feedback = self._load_user_feedback(limit=5)

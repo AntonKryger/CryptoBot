@@ -59,6 +59,18 @@ class TradeExecutor:
             db.execute("ALTER TABLE trades ADD COLUMN source TEXT DEFAULT 'bot'")
         except Exception:
             pass  # Column already exists
+        # Trade journal columns
+        for col, col_type in [
+            ("journal_why", "TEXT"),
+            ("journal_expected_target", "REAL"),
+            ("journal_market_condition", "TEXT"),
+            ("post_analysis", "TEXT"),
+            ("post_analysis_timestamp", "TEXT"),
+        ]:
+            try:
+                db.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # Column already exists
         db.execute("""
             CREATE TABLE IF NOT EXISTS balance_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +180,7 @@ class TradeExecutor:
             self._recently_traded[epic] = datetime.now()
             return None, str(e)
 
-    def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details):
+    def _log_trade(self, epic, signal, size, price, stop_loss, take_profit, result, details, journal_data=None):
         """Log a trade to the database. Checks for duplicate deal_id before insert."""
         deal_ref = result.get("dealReference", "unknown")
         deal_id = deal_ref
@@ -188,10 +200,15 @@ class TradeExecutor:
             logger.warning(f"Trade DB: deal_id {deal_id} already exists, skipping duplicate insert")
             db.close()
             return
+        # Extract journal fields
+        j_why = journal_data.get("why", "") if journal_data else None
+        j_target = journal_data.get("expected_target") if journal_data else None
+        j_condition = journal_data.get("market_condition") if journal_data else None
         db.execute("""
             INSERT INTO trades (timestamp, epic, direction, size, entry_price,
-                                stop_loss, take_profit, deal_id, status, signal_details, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot')
+                                stop_loss, take_profit, deal_id, status, signal_details, source,
+                                journal_why, journal_expected_target, journal_market_condition)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 'bot', ?, ?, ?)
         """, (
             datetime.now().isoformat(),
             epic,
@@ -202,6 +219,9 @@ class TradeExecutor:
             take_profit,
             deal_id,
             str(details),
+            j_why,
+            j_target,
+            j_condition,
         ))
         db.commit()
         db.close()

@@ -18,10 +18,14 @@ from src.strategy.time_bias import TimeBias
 from src.strategy.multi_timeframe import MultiTimeframeAnalyzer
 from src.strategy.news_monitor import NewsMonitor
 from src.risk.manager import RiskManager
+from src.risk.hard_rules import HardRules
 from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
+from src.strategy.trade_journal import TradeJournal
+from src.strategy.post_trade_analyzer import PostTradeAnalyzer
+from src.analysis.weekly_evaluator import WeeklyEvaluator
 
 # ── Logging setup ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -69,6 +73,19 @@ class CryptoBotAI:
         self.ai.news_monitor = self.news
         self.watchdog._cycle_callback = self._handle_cycle_trade
         self.watchdog._scale_in_callback = self._handle_scale_in
+
+        # Self-learning modules
+        self.journal = TradeJournal(self.config)
+        self.hard_rules = HardRules(self.config, self.notifier)
+        self.post_analyzer = PostTradeAnalyzer(self.ai, self.executor, self.notifier, self.config)
+        self.evaluator = WeeklyEvaluator(self.ai, self.executor, self.notifier, self.config)
+
+        # Wire callbacks
+        self.watchdog._post_trade_callback = self.post_analyzer.analyze_closed_trade
+        self.watchdog._trade_result_callback = self.hard_rules.record_trade_result
+
+        # Load approved weekly strategies into AI
+        self.ai._active_strategies = self.evaluator.get_active_strategies()
 
         self.coins = self.config.get("trading", {}).get("coins", [])
         self.scan_interval = self.config.get("trading", {}).get("scan_interval", 60)
@@ -119,6 +136,9 @@ class CryptoBotAI:
 
         # Start position watchdog (fast monitoring every 10-15 sec)
         self.watchdog.start()
+
+        # Start weekly evaluator scheduler (Sunday 08:00 CET)
+        self.evaluator.start_scheduler()
 
         self.running = True
         self._run_loop()
@@ -282,6 +302,11 @@ class CryptoBotAI:
             logger.info("[AI] Ingen trade-signaler denne runde")
             return
 
+        # Post-trade analysis block: wait until previous close is analyzed
+        if self.post_analyzer.is_blocked():
+            logger.info("[AI] Venter på post-trade analyse før nye handler")
+            return
+
         logger.info(f"[AI] {len(trade_signals)} signaler fundet, allokerer kapital...")
         allocations = self.risk.allocate_capital(trade_signals, available)
 
@@ -298,6 +323,25 @@ class CryptoBotAI:
                     stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
                 take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
+                # ── HARD RULES CHECK ──
+                risk_eur = self.hard_rules.calculate_risk_eur(current_price, stop_loss, size)
+                can_trade, rule_reason = self.hard_rules.can_trade(
+                    current_balance, risk_eur, len(open_positions)
+                )
+                if not can_trade:
+                    logger.warning(f"[HARD RULE] {epic} blokeret: {rule_reason}")
+                    continue
+
+                # ── TRADE JOURNAL ──
+                regime_data_for_journal = {"regime": details.get("regime", ""), "adx": details.get("adx", 0)}
+                journal_data, journal_valid, journal_err = self.journal.create_journal(
+                    epic, signal_type, current_price, size, stop_loss, take_profit,
+                    details, regime_data_for_journal
+                )
+                if not journal_valid:
+                    logger.warning(f"[Journal] {epic} afvist: {journal_err}")
+                    continue
+
                 cat = self.risk.get_coin_category(epic)
                 logger.info(
                     f"[AI] Executing {signal_type} {epic} ({cat}): "
@@ -313,10 +357,12 @@ class CryptoBotAI:
                 )
 
                 if result:
-                    # Log to database
+                    # Log to database with journal
                     self.executor._log_trade(epic, signal_type, size, current_price,
-                                             stop_loss, take_profit, result, details)
+                                             stop_loss, take_profit, result, details,
+                                             journal_data=journal_data)
                     self.executor._recently_traded[epic] = __import__('datetime').datetime.now()
+                    self.hard_rules.record_trade_opened()
 
                     # Track in watchdog for max hold time, scale-in, and trend-aware exit
                     deal_id = result.get("dealReference") or result.get("dealId", "")
@@ -425,6 +471,24 @@ class CryptoBotAI:
                 stop_loss = self.risk.calculate_stop_loss(current_price, signal_type)
             take_profit = self.risk.calculate_take_profit(current_price, signal_type, atr_pct, sl_price=stop_loss)
 
+            # Hard rules check for cycle trade
+            positions = self.client.get_positions()
+            open_count = len(positions.get("positions", []))
+            risk_eur = self.hard_rules.calculate_risk_eur(current_price, stop_loss, size)
+            can_trade, rule_reason = self.hard_rules.can_trade(balance["balance"], risk_eur, open_count)
+            if not can_trade:
+                logger.warning(f"[Cycle] {epic} blokeret af hard rule: {rule_reason}")
+                return
+
+            # Journal for cycle trade
+            regime_data_j = {"regime": regime, "adx": 0}
+            journal_data, j_valid, j_err = self.journal.create_journal(
+                epic, signal_type, current_price, size, stop_loss, take_profit, details, regime_data_j
+            )
+            if not j_valid:
+                logger.warning(f"[Cycle] {epic} journal afvist: {j_err}")
+                return
+
             result = self.client.create_position(
                 epic=epic, direction=signal_type, size=size,
                 stop_loss=stop_loss, take_profit=take_profit,
@@ -432,9 +496,11 @@ class CryptoBotAI:
 
             if result:
                 self.executor._log_trade(epic, signal_type, size, current_price,
-                                         stop_loss, take_profit, result, details)
+                                         stop_loss, take_profit, result, details,
+                                         journal_data=journal_data)
                 deal_id = result.get("dealReference") or result.get("dealId", "")
                 self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
+                self.hard_rules.record_trade_opened()
 
                 self.notifier.send(
                     f"🔄 <b>Cycle trade: {epic}</b>\n"
@@ -556,6 +622,8 @@ class CryptoBotAI:
         self.notifier.register_command("/stop", self._cmd_stop)
         self.notifier.register_command("/close", self._cmd_close)
         self.notifier.register_command("/debug", self._cmd_debug)
+        self.notifier.register_command("/eval", self._cmd_eval)
+        self.notifier.register_command("/rules", self._cmd_hard_rules)
 
     def _cmd_status(self, args=None):
         balance = self.client.get_account_balance()
@@ -813,6 +881,12 @@ class CryptoBotAI:
 
     def _handle_chat(self, text, image_data=None):
         """Handle free-text chat messages via Telegram."""
+        # Check for weekly evaluation approval/rejection
+        approval_response = self.evaluator.handle_approval(text)
+        if approval_response:
+            # Reload strategies into AI after approval
+            self.ai._active_strategies = self.evaluator.get_active_strategies()
+            return approval_response
         return self.ai.chat(text, context_fn=self._build_chat_context, image_data=image_data)
 
     def _build_chat_context(self):
@@ -850,6 +924,30 @@ class CryptoBotAI:
 
         return ctx
 
+    def _cmd_eval(self, args=None):
+        """Trigger manual weekly evaluation."""
+        self.notifier.send("📊 Kører ugentlig evaluering...")
+        import threading
+        threading.Thread(target=self.evaluator.run_weekly_evaluation, daemon=True).start()
+        return None
+
+    def _cmd_hard_rules(self, args=None):
+        """Show hard rules status."""
+        status = self.hard_rules.get_status()
+        msg = (
+            f"🚫 <b>Hard Rules Status</b>\n\n"
+            f"Handelstid: {status['trading_hours']}\n"
+            f"Nu (CET): {status['current_cet']}\n"
+            f"I handelstid: {'✅ Ja' if status['in_trading_hours'] else '❌ Nej'}\n\n"
+            f"Tab i træk: {status['consecutive_losses']}/{self.hard_rules.max_consecutive_losses}\n"
+            f"Pause til: {status['pause_until'] or 'Ingen'}\n"
+            f"Sidste trade: {status['last_trade_time'] or 'Ingen'}\n\n"
+            f"Max risiko: {self.hard_rules.max_risk_pct}% per trade\n"
+            f"Max positioner: {self.hard_rules.max_open_positions}\n"
+            f"Min interval: {self.hard_rules.min_trade_interval_minutes} min"
+        )
+        return msg
+
     def _cmd_help(self, args=None):
         return (
             "🧠 <b>CryptoBot AI Kommandoer</b>\n\n"
@@ -859,10 +957,14 @@ class CryptoBotAI:
             "/debug - Debug info (ATR, regimer, watchdog)\n\n"
             "<b>Info:</b>\n"
             "/status - Balance og positioner\n"
-            "/trades - Seneste handler\n\n"
+            "/trades - Seneste handler\n"
+            "/rules - Hard rules status\n\n"
             "<b>Handel:</b>\n"
             "/close EPIC - Luk position\n"
             "/close ALL - Luk alle\n\n"
+            "<b>Selvlæring:</b>\n"
+            "/eval - Kør ugentlig evaluering nu\n"
+            "godkend / afvis - Reagér på evaluering\n\n"
             "<b>System:</b>\n"
             "/stop - Stop AI-botten\n"
             "/help - Denne besked\n\n"

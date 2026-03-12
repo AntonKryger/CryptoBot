@@ -80,6 +80,10 @@ class PositionWatchdog:
         self.time_bias = None  # For sentiment-based night mode
         self.mtf = None  # MultiTimeframeAnalyzer for daily trend context
 
+        # Post-trade analysis and hard rules callbacks
+        self._post_trade_callback = None   # Called with (deal_id, epic) on close
+        self._trade_result_callback = None  # Called with (profit_loss) on close
+
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
             f"breakeven={self.breakeven_trigger_pct}%, "
@@ -738,6 +742,8 @@ class PositionWatchdog:
         else:
             estimated_pl = pl_pct / 100 * entry_price * size
             self.executor.update_trade_close(deal_id, exit_price, estimated_pl, epic=epic)
+            # Notify hard rules and post-trade analyzer on full close
+            self._fire_close_callbacks(deal_id, epic, estimated_pl)
 
     def _update_trade_db_by_deal(self, deal_id, pl_pct, partial=False, epic=None):
         """Update trade DB when we only have deal_id and pl_pct (no entry_price in scope)."""
@@ -764,10 +770,25 @@ class PositionWatchdog:
                 estimated_pl = pl_pct / 100 * entry_price * size
                 exit_price = entry_price * (1 + pl_pct / 100)
                 self.executor.update_trade_close(deal_id, round(exit_price, 5), estimated_pl, partial=partial, epic=matched_epic)
+                if not partial:
+                    self._fire_close_callbacks(deal_id, matched_epic, estimated_pl)
             else:
                 logger.warning(f"Watchdog: No matching OPEN trade for deal_id={deal_id} epic={epic}")
         except Exception as e:
             logger.error(f"Watchdog: DB update by deal failed: {e}")
+
+    def _fire_close_callbacks(self, deal_id, epic, profit_loss):
+        """Fire post-trade analysis and hard rules callbacks on position close."""
+        try:
+            if self._trade_result_callback:
+                self._trade_result_callback(profit_loss)
+        except Exception as e:
+            logger.error(f"Trade result callback error: {e}")
+        try:
+            if self._post_trade_callback:
+                self._post_trade_callback(deal_id, epic)
+        except Exception as e:
+            logger.error(f"Post-trade callback error: {e}")
 
     def _trigger_cycle_trade(self, epic, closed_direction, closed_pl_pct):
         """On position close, check for reversal opportunity (cycle trading)."""
