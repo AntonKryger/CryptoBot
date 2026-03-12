@@ -67,8 +67,8 @@ VIGTIGE REGLER:
 - "Markedet er uklart" = HOLD med praecis plan for hvad der aendrer det.
 - Aldrig trade bare fordi du "foeler" det er rigtigt. Data bestemmer.
 
-Svar KUN med valid JSON:
-{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "CP1: [trend]. CP2: [momentum]. CP3: [price action]. CP4: [sentiment]. CP5: [R:R]. Score: X/5 aligned."}"""
+Svar KUN med valid JSON (MAKS 150 ord i reasoning — vaer kortfattet):
+{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "CP1:[trend] CP2:[momentum] CP3:[PA] CP4:[sentiment] CP5:[RR] = X/5"}"""
 
 
 class AIAnalyst:
@@ -78,7 +78,7 @@ class AIAnalyst:
         ai_cfg = config.get("ai", {})
         self.api_key = ai_cfg.get("anthropic_api_key", "")
         self.model = ai_cfg.get("model", "claude-haiku-4-5-20251001")
-        self.max_tokens = ai_cfg.get("max_tokens", 300)
+        self.max_tokens = ai_cfg.get("max_tokens", 500)
         self.min_confidence = ai_cfg.get("min_confidence", 5)
 
         if not self.api_key:
