@@ -29,6 +29,7 @@ from src.strategy.technical_analysis import MultiTFAnalysis
 from src.strategy.sentiment_pipeline import SentimentPipeline
 from src.executor.positions_sync import PositionSync
 from src.analysis.weekly_evaluator import WeeklyEvaluator
+from src.strategy.range_scalper import RangeScalper
 
 # ── Logging setup ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -99,6 +100,11 @@ class CryptoBotAI:
         # Load approved weekly strategies into AI
         self.ai._active_strategies = self.evaluator.get_active_strategies()
 
+        # Range scalper (automatic grid-style trading without AI)
+        self.scalper = RangeScalper(self.config)
+        self.scalper_timeframe = self.config.get("scalper", {}).get("timeframe", "MINUTE_5")
+        self.scalper_interval = self.config.get("scalper", {}).get("scan_interval", 60)
+
         self.coins = self.config.get("trading", {}).get("coins", [])
         self.scan_interval = self.config.get("trading", {}).get("scan_interval", 60)
         self.timeframe = self.config.get("trading", {}).get("timeframe", "MINUTE_15")
@@ -159,12 +165,24 @@ class CryptoBotAI:
         self._run_loop()
 
     def _run_loop(self):
-        """Main trading loop."""
+        """Main trading loop. Scalper runs every scalper_interval, AI scan less often."""
+        ai_scan_counter = 0
+        ai_scan_ratio = max(1, self.scan_interval // self.scalper_interval)
+
         while self.running:
             try:
-                self._scan_cycle()
+                # Scalper runs every cycle (fast, no AI cost)
+                if self.scalper.enabled:
+                    self._scalper_cycle()
+
+                # AI scan runs less frequently
+                ai_scan_counter += 1
+                if ai_scan_counter >= ai_scan_ratio:
+                    self._scan_cycle()
+                    ai_scan_counter = 0
+
                 self.executor.check_trailing_stops()
-                time.sleep(self.scan_interval)
+                time.sleep(self.scalper_interval if self.scalper.enabled else self.scan_interval)
             except KeyboardInterrupt:
                 logger.info("Stop signal modtaget")
                 self.stop()
@@ -431,6 +449,141 @@ class CryptoBotAI:
 
             except Exception as e:
                 logger.error(f"[AI] Trade execution failed for {epic}: {e}")
+
+    def _scalper_cycle(self):
+        """Fast range-scalper cycle — no AI calls, pure Python logic."""
+        if not self.hard_rules.is_trading_hours():
+            return
+        if self.hard_rules.is_circuit_breaker_active():
+            return
+
+        # Get current positions
+        positions = self.client.get_positions()
+        if positions is None:
+            return
+        open_positions = positions.get("positions", [])
+        open_epics = {}
+        for p in open_positions:
+            epic = p["market"]["epic"]
+            open_epics[epic] = p["position"]["direction"]
+
+        balance = self.client.get_account_balance()
+        if not balance:
+            return
+        current_balance = balance["balance"]
+        available = balance.get("available", current_balance)
+
+        for epic in self.coins:
+            try:
+                # Get 5-minute candles for scalper
+                prices = self.client.get_prices(epic, resolution=self.scalper_timeframe, max_count=100)
+                df = self.signals.prepare_dataframe(prices)
+                if df is None or len(df) < 20:
+                    continue
+
+                df = self.signals.calculate_indicators(df)
+
+                # Get time bias
+                time_bias_label, time_bias_return = "NEUTRAL", 0
+                try:
+                    time_bias_label, time_bias_return, _ = self.time_bias.get_bias(epic)
+                except Exception:
+                    pass
+
+                current_direction = open_epics.get(epic)
+
+                # Evaluate scalper signal
+                signal = self.scalper.evaluate(
+                    epic, df,
+                    time_bias_label=time_bias_label,
+                    time_bias_return=time_bias_return,
+                    current_direction=current_direction,
+                )
+
+                action = signal["action"]
+                confidence = signal["confidence"]
+
+                if action == "HOLD" or confidence < self.scalper._min_confidence:
+                    if action != "HOLD":
+                        logger.debug(f"[Scalper] {epic}: {action} conf {confidence} < min, skipping")
+                    continue
+
+                # ── HARD RULES CHECK ──
+                # Get ADX from regime detector for hard gate
+                regime, adx = self.regime.get_regime(epic)
+                gate_ok, gate_reason = self.hard_rules.pre_trade_gates(epic, adx, len(open_positions))
+                if not gate_ok:
+                    logger.info(f"[Scalper] {epic}: Hard gate blocked — {gate_reason}")
+                    continue
+
+                # If we need to flip (close existing + open opposite)
+                if current_direction and current_direction != action:
+                    # Close existing position (close_position handles direction internally)
+                    for p in open_positions:
+                        if p["market"]["epic"] == epic:
+                            deal_id = p["position"]["dealId"]
+                            close_size = p["position"]["size"]
+                            self.client.close_position(deal_id, current_direction, close_size)
+                            logger.info(f"[Scalper] FLIP: Closed {current_direction} {epic}")
+                            break
+                    current_direction = None
+
+                # Skip if already in same direction
+                if current_direction == action:
+                    continue
+
+                # Calculate position size
+                allocated = available * 0.15  # 15% per scalper trade
+                current_price = df.iloc[-1]["close"]
+                size = self.risk.calculate_position_size(allocated, current_price)
+
+                stop_loss = signal.get("stop_loss", 0)
+                take_profit = signal.get("take_profit", 0)
+
+                if not stop_loss or not take_profit:
+                    continue
+
+                # R:R hard gate
+                rr_ok, rr_ratio = self.hard_rules.check_rr_gate(current_price, stop_loss, take_profit, action)
+                if not rr_ok:
+                    logger.info(f"[Scalper] {epic}: R:R {rr_ratio:.2f} < min, skipping")
+                    continue
+
+                # Risk EUR check
+                risk_eur = self.hard_rules.calculate_risk_eur(current_price, stop_loss, size)
+                can_trade, rule_reason = self.hard_rules.can_trade(current_balance, risk_eur, len(open_positions))
+                if not can_trade:
+                    logger.info(f"[Scalper] {epic}: {rule_reason}")
+                    continue
+
+                # ── EXECUTE TRADE ──
+                result = self.client.create_position(
+                    epic=epic, direction=action, size=size,
+                    stop_loss=stop_loss, take_profit=take_profit,
+                )
+
+                if result:
+                    self.executor._log_trade(epic, action, size, current_price,
+                                             stop_loss, take_profit, result,
+                                             {"scalper": True, "range_pos": signal.get("range_pos", 0),
+                                              "ai_reasoning": signal["reason"]})
+                    self.hard_rules.record_trade_opened()
+                    self.position_sync.sync()
+
+                    deal_id = result.get("dealReference") or result.get("dealId", "")
+                    self.watchdog.track_entry(deal_id, epic, confidence, regime=regime)
+
+                    emoji = "🟢" if action == "BUY" else "🔴"
+                    self.notifier.send(
+                        f"⚡ {emoji} <b>[Scalper] {action}: {epic}</b>\n"
+                        f"Pris: {current_price:.2f} | Range: {signal.get('range_pos', 0):.0f}%\n"
+                        f"SL: {stop_loss:.2f} | TP: {take_profit:.2f} | R:R: {rr_ratio:.1f}:1\n"
+                        f"{signal['reason']}"
+                    )
+                    logger.info(f"[Scalper] {epic}: {action} executed (conf={confidence}, range={signal.get('range_pos', 0):.0f}%)")
+
+            except Exception as e:
+                logger.error(f"[Scalper] Error for {epic}: {e}")
 
     def _handle_cycle_trade(self, epic, opposite_direction, closed_pl_pct=0):
         """Called by watchdog when a position closes - check for reversal trade."""
