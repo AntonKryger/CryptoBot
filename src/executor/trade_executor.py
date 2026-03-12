@@ -4,7 +4,29 @@ import sqlite3
 import os
 from datetime import datetime
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
+
+def _safe_json(obj):
+    """JSON-serialize with numpy type support."""
+    try:
+        return json.dumps(obj, default=_numpy_encoder)
+    except (TypeError, ValueError):
+        return str(obj)
+
+
+def _numpy_encoder(o):
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"Object of type {type(o)} is not JSON serializable")
 
 
 class TradeExecutor:
@@ -150,7 +172,7 @@ class TradeExecutor:
         take_profit = self.risk.calculate_take_profit(current_price, signal, sl_price=stop_loss)
 
         # Build snapshots for comprehensive logging
-        account_snap = json.dumps({
+        account_snap = _safe_json({
             "balance": current_balance,
             "available": balance_info.get("available", current_balance),
             "open_positions": open_count,
@@ -160,7 +182,7 @@ class TradeExecutor:
         sl_dist = abs(current_price - stop_loss)
         tp_dist = abs(take_profit - current_price)
         rr_ratio = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
-        risk_snap = json.dumps({
+        risk_snap = _safe_json({
             "size": size,
             "risk_eur": round(risk_eur, 2),
             "risk_pct": round(risk_eur / current_balance * 100, 2) if current_balance > 0 else 0,
@@ -168,7 +190,7 @@ class TradeExecutor:
             "sl_distance_pct": round(sl_dist / current_price * 100, 2),
             "tp_distance_pct": round(tp_dist / current_price * 100, 2),
         })
-        gates_json = json.dumps(gates_snapshot) if gates_snapshot else None
+        gates_json = _safe_json(gates_snapshot) if gates_snapshot else None
 
         # Execute the trade
         try:
@@ -217,7 +239,7 @@ class TradeExecutor:
                 stop_loss,
                 take_profit,
                 deal_id,
-                json.dumps(signal_details) if isinstance(signal_details, dict) else str(signal_details),
+                _safe_json(signal_details) if isinstance(signal_details, dict) else str(signal_details),
                 account_snap,
                 risk_snap,
                 gates_json,
@@ -265,9 +287,9 @@ class TradeExecutor:
         # Extract alignment score from details
         alignment_score = details.get("alignment_score") if isinstance(details, dict) else None
         # Serialize snapshots
-        acct_json = json.dumps(account_snapshot) if isinstance(account_snapshot, dict) else account_snapshot
-        risk_json = json.dumps(risk_snapshot) if isinstance(risk_snapshot, dict) else risk_snapshot
-        gates_json = json.dumps(gates_snapshot) if isinstance(gates_snapshot, dict) else gates_snapshot
+        acct_json = _safe_json(account_snapshot) if isinstance(account_snapshot, dict) else account_snapshot
+        risk_json = _safe_json(risk_snapshot) if isinstance(risk_snapshot, dict) else risk_snapshot
+        gates_json = _safe_json(gates_snapshot) if isinstance(gates_snapshot, dict) else gates_snapshot
         db.execute("""
             INSERT INTO trades (timestamp, epic, direction, size, entry_price,
                                 stop_loss, take_profit, deal_id, status, signal_details, source,
@@ -284,7 +306,7 @@ class TradeExecutor:
             stop_loss,
             take_profit,
             deal_id,
-            json.dumps(details) if isinstance(details, dict) else str(details),
+            _safe_json(details) if isinstance(details, dict) else str(details),
             j_why,
             j_target,
             j_condition,
