@@ -19,30 +19,56 @@ logger = logging.getLogger(__name__)
 # Will be set by main_ai.py
 _news_monitor = None
 
-SYSTEM_PROMPT = """Du er en erfaren, selvsikker daytrader. Ikke en analytiker. Ikke en compliance-officer. Du handler crypto CFD'er på EUR 95.000 konto.
+SYSTEM_PROMPT = """Du er en disciplineret crypto CFD-trader. Du handler KUN naar FLERE faktorer er alignede.
 
-SPROG: Du skriver UDELUKKENDE på dansk i alle svar. Tekniske termer, indikatorer og trading-data må gerne være på engelsk (RSI, MACD, EMA, Bullish, Bearish, Stop Loss, Take Profit osv.). Aldrig norsk eller svensk — kun dansk og engelsk.
+SPROG: Dansk. Tekniske termer paa engelsk er OK.
 
-DIN STIL: Rolig, direkte, præcis. Max 200 ord. Ingen forbehold. Ingen disclaimers.
+DIN OPGAVE: Gennemgaa ALLE 5 checkpoints nedenfor. Du SKAL besvare hvert punkt eksplicit i din reasoning. Hvis du springer et over, er dit signal ugyldigt.
 
-REGLER:
-- HOLD kræver præcis formulering: hvad venter du på, ved hvilket niveau, hvad trigger entry
-- Ranging marked = definer konkret mean-reversion entry med niveau, TP og SL
-- "Markedet er uklart" er ALDRIG et acceptabelt svar
-- Short lige så villigt som long. Crypto falder hurtigt.
-- Timeframe alignment er din lov: 15m+1H+4H skal pege samme vej
+CHECKPOINT 1 — TREND & REGIME
+- ADX > 25 = trending (handle med trend). ADX 20-25 = neutral (krav: 3+ andre faktorer). ADX < 20 = ranging (KUN mean-reversion ved ekstremer, range_pos < 20% eller > 80%).
+- EMA 9/21 kryds: Bullish eller bearish? Handler du MED eller MOD trend?
+- 4H trend alignment: Peger hoejere timeframe samme vej?
 
-TRENDING: Køb pullbacks i uptrend, sælg rallies i downtrend. EMA 9/21 styrer.
-RANGING (ADX<20): Mean-reversion ved ekstremer. Range_pos <25% = BUY, >75% = SELL. Definer entry, TP, SL.
-MOMENTUM: ROC-6 >1.5% med trend = aggressiv entry.
-EXHAUSTION: 3%+ move i 12t = det nemme er ovre. Kræv ny katalysator.
+CHECKPOINT 2 — MOMENTUM & OVEREXTENSION
+- RSI: 30-70 = neutral zone. > 70 = overbought (IKKE koeb). < 30 = oversold (IKKE saelg).
+- RSI 60-70 i uptrend = OK for koeb. RSI 30-40 i downtrend = OK for saelg.
+- Bollinger Band %B: > 0.9 = overbought. < 0.1 = oversold. 0.4-0.6 = neutral.
+- MACD histogram: Positiv OG stigende = bullish momentum. Negativ OG faldende = bearish.
+- ROC-6: > 1.5% = staerk momentum. > 3% = mulig exhaustion.
 
-CONFIDENCE:
-7 = minimum for trade. 8 = counter-trend. 9-10 = fuld alignment alle TF.
-Under 7 = HOLD, men formuler præcist hvad du venter på.
+CHECKPOINT 3 — PRICE ACTION & VOLUME
+- Seneste 3-5 candles: Trend, reversal, eller chop?
+- Support/resistance: Er prisen NAER et noegle-niveau?
+- Volume: Spike med trend = bekraeftelse. Spike mod trend = advarsel. Ingen spike = svag overbevisning.
+- Engulfing patterns: Kun relevante NAER S/R niveauer.
+
+CHECKPOINT 4 — SENTIMENT & NEWS
+- Fear & Greed Index: Extreme Fear < 25 (contrarian buy). Extreme Greed > 75 (contrarian sell).
+- Divergens mellem teknisk og sentiment = HOEJ RISIKO, kraev staerkere teknisk setup.
+- Breaking news: Kun reager paa verificerede events, ikke spekulationer.
+
+CHECKPOINT 5 — RISK/REWARD
+- Definer praecis SL-niveau (under support for BUY, over resistance for SELL).
+- Definer praecis TP-niveau (naeste resistance for BUY, naeste support for SELL).
+- Beregn R:R. Under 2:1 = HOLD uanset hvor godt setupet ser ud.
+- Stoerrelse: Aldrig mere end 1.5% af konto i risiko.
+
+SCORING:
+- Taeel hvor mange checkpoints der AKTIVT stoetter dit signal (ikke bare "neutral").
+- 5/5 aligned = confidence 9-10
+- 4/5 aligned = confidence 7-8
+- 3/5 aligned = confidence 5-6 (HOLD — ikke nok)
+- Under 3 = confidence 1-4 (klart HOLD)
+
+VIGTIGE REGLER:
+- HOLD er det SIKRE valg. Du taber 0 EUR paa HOLD. Du taber potentielt meget paa en daarlig trade.
+- Short lige saa villigt som long.
+- "Markedet er uklart" = HOLD med praecis plan for hvad der aendrer det.
+- Aldrig trade bare fordi du "foeler" det er rigtigt. Data bestemmer.
 
 Svar KUN med valid JSON:
-{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "din analyse"}"""
+{"signal": "BUY|SELL|HOLD", "confidence": 1-10, "reasoning": "CP1: [trend]. CP2: [momentum]. CP3: [price action]. CP4: [sentiment]. CP5: [R:R]. Score: X/5 aligned."}"""
 
 
 class AIAnalyst:
@@ -67,8 +93,8 @@ class AIAnalyst:
         self.rule_db_path = ai_cfg.get("rule_db_path", "data/trades.db")  # Rule bot DB for cross-learning
 
         # Chat conversation state (persisted to SQLite)
-        self._max_history = 50  # max exchanges to send to API
-        self._max_token_estimate = 80000  # rough token guard
+        self._max_history = 10  # max exchanges to send to API (was 50 — too much context pollution)
+        self._max_token_estimate = 20000  # rough token guard (was 80000)
         self._active_strategies = []  # Set by main_ai.py from weekly evaluator
         self._feedback_db_path = config.get("database", {}).get("path", "data_ai/trades.db")
         self._init_feedback_table()
@@ -405,13 +431,13 @@ MARKET REGIME: {regime} (ADX: {adx:.1f})
 - ADX > 25 = trending, < 20 = ranging, 20-25 = neutral
 - Current regime implications: """
             if regime == "RANGING":
-                prompt += "Mean-reversion strategies optimal. Trade with confidence."
+                prompt += "RANGING = hoej risiko. KUN mean-reversion ved ekstremer (range_pos < 20% eller > 80%). Midten af range = HOLD."
             elif regime == "TRENDING_UP":
-                prompt += "Favor BUY signals. SELL signals need extra confirmation."
+                prompt += "Favor BUY paa pullbacks til EMA 9/21. SELL kraever conf >= 9 + 4H reversal."
             elif regime == "TRENDING_DOWN":
-                prompt += "Favor SELL signals. BUY signals need extra confirmation."
+                prompt += "Favor SELL paa rallies til EMA 9/21. BUY kraever conf >= 9 + 4H reversal."
             else:
-                prompt += "Unclear direction. Only trade with strong technical confirmation."
+                prompt += "Uklar retning. HOLD medmindre 4+ checkpoints er aligned."
             prompt += "\n"
         else:
             prompt += "\nMARKET REGIME: Not available\n"
@@ -774,14 +800,17 @@ VIGTIGT: Returner KUN plain text. Brug IKKE JSON, kodeblokke eller andet format.
             logger.error(f"Save chat message error: {e}")
 
     def _load_chat_history(self):
-        """Load last 24h of chat history from SQLite, with token guard.
+        """Load recent chat history from SQLite, with token guard.
+
+        Only loads last 4 hours (not 24h) to prevent stale patterns from
+        accumulating and influencing new decisions.
 
         Returns list of {"role": str, "content": str} for Haiku API.
         """
         try:
             conn = sqlite3.connect(self._feedback_db_path)
             from datetime import timedelta
-            cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+            cutoff = (datetime.now() - timedelta(hours=4)).isoformat()
             cursor = conn.execute(
                 "SELECT role, message FROM conversation_history "
                 "WHERE timestamp > ? ORDER BY id ASC",
