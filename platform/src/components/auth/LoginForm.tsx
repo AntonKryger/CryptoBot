@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { safeRedirect } from "@/lib/safe-redirect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
@@ -10,7 +11,7 @@ import Link from "next/link";
 export default function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirect = searchParams.get("redirect") || "/dashboard";
+  const redirect = safeRedirect(searchParams.get("redirect") || "/dashboard");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
