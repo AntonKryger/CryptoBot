@@ -27,6 +27,7 @@ from src.strategy.trade_journal import TradeJournal
 from src.strategy.post_trade_analyzer import PostTradeAnalyzer
 from src.strategy.technical_analysis import MultiTFAnalysis
 from src.strategy.sentiment_pipeline import SentimentPipeline
+from src.strategy.chart_analysis import ChartAnalysis
 from src.executor.positions_sync import PositionSync
 from src.analysis.weekly_evaluator import WeeklyEvaluator
 from src.strategy.range_scalper import RangeScalper
@@ -357,6 +358,14 @@ class CryptoBotAI:
                         logger.warning(f"[AI] {epic}: SELL BLOCKED - bullish hour (avg return {time_bias_return:+.3f}%)")
                         continue
 
+                    # Friday evening: only allow trades with clear impulse structure
+                    if self.hard_rules.is_friday_evening():
+                        structure = ChartAnalysis.detect_market_structure(df)
+                        struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                        fri_ok, fri_reason = self.hard_rules.check_friday_structure_gate(epic, struct_type)
+                        if not fri_ok:
+                            continue
+
                     trade_signals.append((epic, signal_type, confidence, details))
                     logger.info(f"[AI] {epic}: {signal_type} (confidence: {confidence}) -> til allokering")
                 else:
@@ -532,6 +541,14 @@ class CryptoBotAI:
                 if not gate_ok:
                     logger.info(f"[Scalper] {epic}: Hard gate blocked — {gate_reason}")
                     continue
+
+                # Friday evening: only allow trades with clear impulse structure
+                if self.hard_rules.is_friday_evening():
+                    structure = ChartAnalysis.detect_market_structure(df)
+                    struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                    fri_ok, fri_reason = self.hard_rules.check_friday_structure_gate(epic, struct_type)
+                    if not fri_ok:
+                        continue
 
                 # If we need to flip (close existing + open opposite)
                 if current_direction and current_direction != action:
@@ -710,6 +727,14 @@ class CryptoBotAI:
             except Exception:
                 pass
 
+            # Friday evening: only allow cycle trades with clear impulse structure
+            if self.hard_rules.is_friday_evening():
+                structure = ChartAnalysis.detect_market_structure(df)
+                struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                fri_ok, fri_reason = self.hard_rules.check_friday_structure_gate(epic, struct_type)
+                if not fri_ok:
+                    return
+
             # Execute cycle trade
             balance = self.client.get_account_balance()
             if not balance:
@@ -815,6 +840,14 @@ class CryptoBotAI:
                 return
 
             df = self.signals.calculate_indicators(df)
+
+            # Friday evening: only allow scale-in with clear impulse structure
+            if self.hard_rules.is_friday_evening():
+                structure = ChartAnalysis.detect_market_structure(df)
+                struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                fri_ok, fri_reason = self.hard_rules.check_friday_structure_gate(epic, struct_type)
+                if not fri_ok:
+                    return
 
             regime_data = {"regime": regime, "adx": adx}
             signal_type, details = self.ai.analyze(epic, df, regime_data=regime_data)

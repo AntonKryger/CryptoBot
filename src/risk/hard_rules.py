@@ -32,6 +32,7 @@ class HardRules:
         self.no_trade_after_hour = trading_cfg.get("trading_hours_end", 22)
         self.min_trade_interval_minutes = trading_cfg.get("min_interval_minutes", 15)
         self.max_hold_hours = trading_cfg.get("max_hold_hours", 4)
+        self.friday_cutoff_hour = trading_cfg.get("friday_cutoff_hour", 20)
 
         # Telegram spam guard: max 1 notification per gate type per 30 min
         self._last_notify = {}  # {reason_prefix: datetime}
@@ -43,7 +44,8 @@ class HardRules:
             f"[HardRules] Config: ADX>={self.min_adx} | R:R>={self.min_rr_ratio} | "
             f"MaxPos={self.max_open_positions} | Hours={self.no_trade_before_hour}-{self.no_trade_after_hour} CET | "
             f"CircuitBreaker={self.max_consecutive_losses}losses/{self.loss_pause_minutes}min | "
-            f"MinInterval={self.min_trade_interval_minutes}min | MaxHold={self.max_hold_hours}h"
+            f"MinInterval={self.min_trade_interval_minutes}min | MaxHold={self.max_hold_hours}h | "
+            f"FridayStructureOnly>={self.friday_cutoff_hour}:00 CET"
         )
 
     def _init_db(self):
@@ -162,7 +164,11 @@ class HardRules:
             self._save_state("consecutive_losses", self._state["consecutive_losses"])
 
             if self._state["consecutive_losses"] >= self.max_consecutive_losses:
-                pause_until = datetime.now() + timedelta(minutes=self.loss_pause_minutes)
+                # Escalating pause: doubles for each additional loss beyond threshold
+                extra = self._state["consecutive_losses"] - self.max_consecutive_losses
+                multiplier = min(2 ** extra, 8)  # Cap at 8x (160 min with default 20)
+                pause_minutes = self.loss_pause_minutes * multiplier
+                pause_until = datetime.now() + timedelta(minutes=pause_minutes)
                 self._state["pause_until"] = pause_until
                 self._save_state("pause_until", pause_until.isoformat())
 
@@ -170,10 +176,10 @@ class HardRules:
                     f"⛔ <b>TABSPAUSE AKTIVERET</b>\n"
                     f"{self._state['consecutive_losses']} tab i træk!\n"
                     f"Pause til: {pause_until.strftime('%H:%M')}\n"
-                    f"({self.loss_pause_minutes} min tvungen pause)"
+                    f"({pause_minutes:.0f} min pause — eskalerende)"
                 )
                 self.notifier.send(msg)
-                logger.warning(f"[HardRules] Loss pause activated: {self._state['consecutive_losses']} losses")
+                logger.warning(f"[HardRules] Loss pause activated: {self._state['consecutive_losses']} losses, {pause_minutes:.0f} min (multiplier {multiplier}x)")
         else:
             # Win resets the counter
             if self._state["consecutive_losses"] > 0:
@@ -193,7 +199,9 @@ class HardRules:
             "last_trade_time": self._state["last_trade_time"].isoformat() if self._state["last_trade_time"] else None,
             "trading_hours": f"{self.no_trade_before_hour:02d}:00-{self.no_trade_after_hour:02d}:00 CET",
             "current_cet": now_cet.strftime("%H:%M"),
-            "in_trading_hours": self.no_trade_before_hour <= now_cet.hour < self.no_trade_after_hour,
+            "in_trading_hours": self.is_trading_hours(),
+            "friday_structure_only": self.is_friday_evening(),
+            "friday_cutoff_hour": f"{self.friday_cutoff_hour}:00 CET",
         }
 
     # ── Standalone gate checks (usable from any code path) ──
@@ -230,7 +238,32 @@ class HardRules:
     def is_trading_hours(self):
         """Check if we are in allowed trading hours (CET)."""
         now_cet = datetime.now(CET)
-        return self.no_trade_before_hour <= now_cet.hour < self.no_trade_after_hour
+        if now_cet.hour < self.no_trade_before_hour or now_cet.hour >= self.no_trade_after_hour:
+            return False
+        return True
+
+    def is_friday_evening(self):
+        """Check if it's Friday evening (structure-only mode)."""
+        now_cet = datetime.now(CET)
+        return now_cet.weekday() == 4 and now_cet.hour >= self.friday_cutoff_hour
+
+    def check_friday_structure_gate(self, epic, market_structure):
+        """Friday evening gate: only allow trades with clear impulse structure.
+        Returns (allowed, reason). Pass market_structure string from ChartAnalysis."""
+        if not self.is_friday_evening():
+            return True, "OK"
+
+        impulse_structures = ("BEARISH_IMPULSE", "BULLISH_IMPULSE")
+        if market_structure in impulse_structures:
+            logger.info(f"[HardRules] FREDAG AFTEN: {epic} tilladt — klar struktur ({market_structure})")
+            return True, "OK"
+
+        reason = (
+            f"FREDAG AFTEN FILTER: {epic} struktur={market_structure} "
+            f"— kun IMPULSE tilladt efter {self.friday_cutoff_hour}:00 CET fredag"
+        )
+        self._notify_blocked(reason)
+        return False, reason
 
     def is_circuit_breaker_active(self):
         """Check if circuit breaker pause is active."""

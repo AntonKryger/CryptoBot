@@ -10,6 +10,7 @@ COPY main.py .
 COPY main_ai.py .
 COPY main_coach.py .
 COPY dashboard.py .
+COPY preflight_check.py .
 
 RUN mkdir -p logs data
 

@@ -1,6 +1,7 @@
 import yaml
 import os
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,48 @@ def load_config(path=None):
             config["risk"].setdefault(key, value)
 
     logger.info(f"Config loaded from {config_path}")
+
+    # Print startup identity banner
+    print_identity_banner(config, config_path)
+
     return config
+
+
+def print_identity_banner(config, config_path="?"):
+    """Print a clear identity banner at startup so operator can verify credentials."""
+    bot_cfg = config.get("bot", {})
+    cap_cfg = config.get("capital", {})
+    tg_cfg = config.get("telegram", {})
+
+    bot_id = bot_cfg.get("id", "UNKNOWN")
+    bot_name = bot_cfg.get("name", "Unknown Bot")
+    bot_type = bot_cfg.get("type", "unknown")
+    email = cap_cfg.get("email", "NOT SET")
+    demo = cap_cfg.get("demo", True)
+    api_key = cap_cfg.get("api_key", "")
+    account_name = cap_cfg.get("account_name", "default")
+    tg_token = tg_cfg.get("bot_token", "")
+
+    # Create a fingerprint from credentials for quick comparison
+    cred_hash = hashlib.md5(f"{email}:{api_key}".encode()).hexdigest()[:8]
+
+    mode = "DEMO" if demo else "🔴 LIVE 🔴"
+
+    banner = f"""
+╔══════════════════════════════════════════════════╗
+║  BOT IDENTITY                                    ║
+╠══════════════════════════════════════════════════╣
+║  Bot ID:      {bot_id:<35}║
+║  Bot Name:    {bot_name:<35}║
+║  Bot Type:    {bot_type:<35}║
+║  Mode:        {mode:<35}║
+║  Account:     {email:<35}║
+║  Sub-account: {str(account_name):<35}║
+║  Cred Hash:   {cred_hash:<35}║
+║  Telegram:    {tg_token[-10:] if tg_token else 'DISABLED':<35}║
+║  Config:      {os.path.basename(config_path):<35}║
+╚══════════════════════════════════════════════════╝"""
+    logger.info(banner)
 
 
 def apply_profile(config, profile_name):

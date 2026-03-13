@@ -16,6 +16,7 @@ class TelegramNotifier:
         self.bot_token = tg_cfg.get("bot_token", "")
         self.chat_id = tg_cfg.get("chat_id", "")
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+        self.bot_id = config.get("bot", {}).get("id", "BOT")
 
         # Command handling
         self._last_update_id = 0
@@ -164,11 +165,15 @@ class TelegramNotifier:
 
     # ── Send messages ────────────────────────────────────────────
 
-    def send(self, message, parse_mode="HTML"):
+    def send(self, message, parse_mode="HTML", prefix=True):
         """Send a message to the configured Telegram chat."""
         if not self.enabled:
             logger.debug(f"Telegram disabled, would send: {message}")
             return
+
+        # Prefix with bot ID so user knows which bot sent it
+        if prefix and self.bot_id:
+            message = f"[{self.bot_id}] {message}"
 
         try:
             payload = {

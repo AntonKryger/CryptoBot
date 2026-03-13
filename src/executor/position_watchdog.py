@@ -618,10 +618,15 @@ class PositionWatchdog:
 
         max_hours = self.risk.get_max_hold_hours(epic)
 
-        # Structure-aligned trades get 2x hold time — the trend supports holding
+        # Structure-aligned trades are NEVER closed by max-hold — SL handles risk
         if self._is_structure_aligned(direction, epic):
-            max_hours *= 2
-            logger.debug(f"Watchdog: {epic} structure-aligned ({direction}), max hold extended to {max_hours}h")
+            hold_hours = (datetime.now() - entry_time).total_seconds() / 3600
+            if hold_hours >= max_hours:
+                logger.info(
+                    f"WATCHDOG: Max hold exceeded for {epic} ({hold_hours:.1f}h) "
+                    f"but STRUCTURE-ALIGNED ({direction}) — SL handles risk, skipping time-close"
+                )
+            return False
 
         hold_duration = datetime.now() - entry_time
         hold_hours = hold_duration.total_seconds() / 3600

@@ -7,6 +7,7 @@ import time
 import sys
 import signal
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.config import load_config
 from src.api.capital_client import CapitalClient
@@ -20,6 +21,7 @@ from src.executor.trade_executor import TradeExecutor
 from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
 from src.analysis.reporter import Reporter
+from src.strategy.chart_analysis import ChartAnalysis
 
 logger = logging.getLogger("CryptoBot")
 
@@ -209,6 +211,19 @@ class CryptoBot:
                 self.watchdog.update_atr(epic, atr_pct)
 
                 if signal_type in ("BUY", "SELL"):
+                    # Friday evening: only allow trades with clear impulse structure
+                    now_cet = datetime.now(ZoneInfo("Europe/Copenhagen"))
+                    friday_cutoff = self.config.get("trading", {}).get("friday_cutoff_hour", 20)
+                    if now_cet.weekday() == 4 and now_cet.hour >= friday_cutoff:
+                        structure = ChartAnalysis.detect_market_structure(df)
+                        struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                        if struct_type not in ("BEARISH_IMPULSE", "BULLISH_IMPULSE"):
+                            logger.warning(
+                                f"FREDAG AFTEN FILTER: {epic} struktur={struct_type} "
+                                f"— kun IMPULSE tilladt efter {friday_cutoff}:00 CET"
+                            )
+                            continue
+
                     # Hard time-of-day filter: block counter-bias trades in strong bearish/bullish hours
                     if self.time_bias:
                         try:
@@ -292,6 +307,19 @@ class CryptoBot:
                 return
 
             signal_type, details = self.signals.get_signal(df, epic=epic)
+
+            # Friday evening: only allow cycle trades with clear impulse structure
+            now_cet = datetime.now(ZoneInfo("Europe/Copenhagen"))
+            friday_cutoff = self.config.get("trading", {}).get("friday_cutoff_hour", 20)
+            if now_cet.weekday() == 4 and now_cet.hour >= friday_cutoff:
+                structure = ChartAnalysis.detect_market_structure(df)
+                struct_type = structure.get("structure", "UNCLEAR") if structure else "UNCLEAR"
+                if struct_type not in ("BEARISH_IMPULSE", "BULLISH_IMPULSE"):
+                    logger.warning(
+                        f"FREDAG AFTEN FILTER: {epic} cycle trade — struktur={struct_type} "
+                        f"— kun IMPULSE tilladt efter {friday_cutoff}:00 CET"
+                    )
+                    return
 
             # Only enter if signal matches suggested direction and is strong enough
             if signal_type != suggested_direction:
