@@ -200,11 +200,11 @@ class RiskManager:
     def calculate_take_profit(self, entry_price, direction, atr_pct=0, sl_price=None):
         """Calculate take-profit price ensuring minimum R:R ratio.
 
-        TP is always at least 1.5x the SL distance (R:R >= 1.5:1).
+        TP is always at least 2.0x the SL distance (R:R >= 2.0:1).
         Uses ATR×3.0 as base (up from 1.5), clamped [3%, 10%].
         Falls back to fixed TP if ATR not available.
         """
-        min_rr_ratio = 1.5  # Minimum reward:risk ratio
+        min_rr_ratio = 2.0  # Must match hard_rules.min_rr_ratio
 
         if atr_pct > 0:
             raw_tp_pct = atr_pct * 3.0
