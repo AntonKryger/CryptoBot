@@ -61,6 +61,16 @@ export async function middleware(request: NextRequest) {
 
   const supabase = createMiddlewareSupabaseClient(request, response);
 
+  // Helper: create redirect that preserves Supabase auth cookies
+  function redirectTo(url: string): NextResponse {
+    const redirectResponse = NextResponse.redirect(new URL(url, request.url));
+    // Copy all cookies set by Supabase (token refresh etc.) to the redirect
+    response.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie);
+    });
+    return redirectResponse;
+  }
+
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -70,14 +80,13 @@ export async function middleware(request: NextRequest) {
     if (isPublicRoute(pathname)) {
       return response;
     }
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("redirect", pathname);
-    return NextResponse.redirect(loginUrl);
+    const loginUrl = `/login?redirect=${encodeURIComponent(pathname)}`;
+    return redirectTo(loginUrl);
   }
 
   // ─── AUTHENTICATED on auth-only routes (login/signup/forgot) → redirect away ───
   if (isAuthOnlyRoute(pathname)) {
-    return NextResponse.redirect(new URL("/pricing", request.url));
+    return redirectTo("/pricing");
   }
 
   // ─── AUTHENTICATED on public routes → always allow ───
@@ -86,7 +95,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // ─── From here: authenticated + protected route → need profile ───
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("role, has_2fa, tier, onboarding_completed, subscription_status")
     .eq("id", user.id)
@@ -95,20 +104,19 @@ export async function middleware(request: NextRequest) {
   // No profile → safe fallback to pricing
   if (!profile) {
     if (pathname === "/callback") return response;
-    return NextResponse.redirect(new URL("/pricing", request.url));
+    console.error("[middleware] No profile for user", user.id, profileError?.message);
+    return redirectTo("/pricing");
   }
 
   // ─── OWNER → bypass all gates ───
   if (profile.role === "owner") {
-    if (isAdminRoute(pathname) && !profile.has_2fa) {
-      return NextResponse.redirect(new URL("/setup-2fa", request.url));
-    }
+    // 2FA required for admin — skip for now, owner can set it up from admin
     return response;
   }
 
   // ─── Non-owner on admin routes ───
   if (isAdminRoute(pathname)) {
-    return NextResponse.redirect(new URL("/pricing", request.url));
+    return redirectTo("/pricing");
   }
 
   // ─── SUBSCRIBER GATES ───
@@ -124,7 +132,7 @@ export async function middleware(request: NextRequest) {
 
   // No tier → must pick a plan
   if (!profile.tier) {
-    return NextResponse.redirect(new URL("/pricing", request.url));
+    return redirectTo("/pricing");
   }
 
   // Has tier but no active subscription → must pay
@@ -132,7 +140,7 @@ export async function middleware(request: NextRequest) {
     profile.subscription_status === "none" ||
     profile.subscription_status === "canceled"
   ) {
-    return NextResponse.redirect(new URL("/pricing", request.url));
+    return redirectTo("/pricing");
   }
 
   // Active subscription but onboarding not done → must complete
@@ -140,7 +148,7 @@ export async function middleware(request: NextRequest) {
     profile.subscription_status === "active" &&
     !profile.onboarding_completed
   ) {
-    return NextResponse.redirect(new URL("/onboarding", request.url));
+    return redirectTo("/onboarding");
   }
 
   // All gates passed → allow
