@@ -1,8 +1,11 @@
 """Dashboard routes - HTML pages and JSON API endpoints."""
 
-from flask import Blueprint, render_template, jsonify, request, current_app
-
+import logging
 import os
+import time
+
+import requests as http_requests
+from flask import Blueprint, render_template, jsonify, request, current_app
 
 bp = Blueprint(
     "dashboard", __name__,
@@ -128,6 +131,116 @@ def api_comparison():
 def api_compare():
     period = request.args.get("period", "all")
     return jsonify(current_app.stats.get_period_comparison(period))
+
+
+# ── Price proxy for SaaS platform charts ─────────────────────
+
+DEMO_URL = "https://demo-api-capital.backend-capital.com"
+ALLOWED_EPICS = {"BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD", "LTCUSD"}
+ALLOWED_RESOLUTIONS = {"MINUTE_15", "HOUR", "HOUR_4", "DAY"}
+
+_capital_session = {"cst": None, "token": None, "expires": 0}
+
+
+def _get_capital_session():
+    """Get or refresh Capital.com session for price data."""
+    if _capital_session["cst"] and time.time() < _capital_session["expires"]:
+        return _capital_session["cst"], _capital_session["token"]
+
+    email = os.environ.get("CAPITAL_EMAIL", "")
+    password = os.environ.get("CAPITAL_PASSWORD", "")
+    api_key = os.environ.get("CAPITAL_API_KEY", "")
+
+    if not all([email, password, api_key]):
+        raise ValueError("Capital.com credentials not configured")
+
+    resp = http_requests.post(f"{DEMO_URL}/api/v1/session", json={
+        "identifier": email,
+        "password": password,
+        "encryptedPassword": False,
+    }, headers={"X-CAP-API-KEY": api_key}, timeout=10)
+    resp.raise_for_status()
+
+    _capital_session["cst"] = resp.headers.get("CST")
+    _capital_session["token"] = resp.headers.get("X-SECURITY-TOKEN")
+    _capital_session["expires"] = time.time() + 8 * 60
+    return _capital_session["cst"], _capital_session["token"]
+
+
+@bp.route("/api/prices")
+def api_prices():
+    """Proxy Capital.com price data for SaaS platform charts."""
+    epic = request.args.get("epic", "BTCUSD")
+    resolution = request.args.get("resolution", "HOUR")
+    max_count = min(int(request.args.get("max", 200)), 500)
+
+    if epic not in ALLOWED_EPICS:
+        return jsonify({"error": f"Invalid epic: {epic}"}), 400
+    if resolution not in ALLOWED_RESOLUTIONS:
+        return jsonify({"error": f"Invalid resolution: {resolution}"}), 400
+
+    try:
+        api_key = os.environ.get("CAPITAL_API_KEY", "")
+        cst, token = _get_capital_session()
+
+        resp = http_requests.get(
+            f"{DEMO_URL}/api/v1/prices/{epic}",
+            params={"resolution": resolution, "max": max_count},
+            headers={
+                "X-CAP-API-KEY": api_key,
+                "CST": cst,
+                "X-SECURITY-TOKEN": token,
+            },
+            timeout=10,
+        )
+
+        if resp.status_code == 401:
+            _capital_session["expires"] = 0
+            cst, token = _get_capital_session()
+            resp = http_requests.get(
+                f"{DEMO_URL}/api/v1/prices/{epic}",
+                params={"resolution": resolution, "max": max_count},
+                headers={
+                    "X-CAP-API-KEY": api_key,
+                    "CST": cst,
+                    "X-SECURITY-TOKEN": token,
+                },
+                timeout=10,
+            )
+
+        resp.raise_for_status()
+        data = resp.json()
+
+        candles = []
+        for p in data.get("prices", []):
+            time_str = p.get("snapshotTime", "")
+            try:
+                ts = int(time.mktime(time.strptime(time_str, "%Y/%m/%d %H:%M:%S")))
+            except ValueError:
+                continue
+
+            o = p.get("openPrice", {})
+            h = p.get("highPrice", {})
+            l = p.get("lowPrice", {})
+            c = p.get("closePrice", {})
+
+            candles.append({
+                "time": ts,
+                "open": o.get("mid", o.get("ask", 0)),
+                "high": h.get("mid", h.get("ask", 0)),
+                "low": l.get("mid", l.get("ask", 0)),
+                "close": c.get("mid", c.get("ask", 0)),
+                "volume": p.get("lastTradedVolume", 0),
+            })
+
+        response = jsonify({"candles": candles})
+        response.headers["Cache-Control"] = "public, max-age=30"
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+    except Exception as e:
+        logging.error(f"[Dashboard] Price proxy error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @bp.route("/api/validate_pl")

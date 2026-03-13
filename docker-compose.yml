@@ -67,9 +67,12 @@ services:
     container_name: cryptobot-dashboard
     command: ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "30", "dashboard:app"]
     ports:
-      - "127.0.0.1:5000:5000"
+      - "0.0.0.0:5000:5000"
     environment:
       - BOT_DATA_DIR=/app/bot_data
+      - CAPITAL_EMAIL=anton.nellemann@gmail.com
+      - CAPITAL_PASSWORD=Ypk26pdn!claudebot
+      - CAPITAL_API_KEY=C7VkG2cJuPoiqW2B
     volumes:
       - ./data_rl1:/app/bot_data/rl1:ro
       - ./data_rd1:/app/bot_data/rd1:ro
