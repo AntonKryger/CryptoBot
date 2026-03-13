@@ -215,8 +215,11 @@ def api_prices():
         for p in data.get("prices", []):
             time_str = p.get("snapshotTime", "")
             try:
-                ts = int(time.mktime(time.strptime(time_str, "%Y/%m/%d %H:%M:%S")))
-            except ValueError:
+                # Capital.com returns ISO format: "2026-03-13T14:00:00"
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(time_str).replace(tzinfo=timezone.utc)
+                ts = int(dt.timestamp())
+            except (ValueError, TypeError):
                 continue
 
             o = p.get("openPrice", {})
@@ -224,12 +227,20 @@ def api_prices():
             l = p.get("lowPrice", {})
             c = p.get("closePrice", {})
 
+            def _mid(prices):
+                """Calculate mid price from bid/ask."""
+                bid = prices.get("bid", 0)
+                ask = prices.get("ask", 0)
+                if bid and ask:
+                    return round((bid + ask) / 2, 6)
+                return ask or bid or 0
+
             candles.append({
                 "time": ts,
-                "open": o.get("mid", o.get("ask", 0)),
-                "high": h.get("mid", h.get("ask", 0)),
-                "low": l.get("mid", l.get("ask", 0)),
-                "close": c.get("mid", c.get("ask", 0)),
+                "open": _mid(o),
+                "high": _mid(h),
+                "low": _mid(l),
+                "close": _mid(c),
                 "volume": p.get("lastTradedVolume", 0),
             })
 
