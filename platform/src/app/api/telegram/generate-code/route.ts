@@ -1,7 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { verifyCsrf } from "@/lib/csrf";
+import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  if (!verifyCsrf(request)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const rl = rateLimit(getRateLimitKey(request, "tg-code"), 5, 60_000);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const supabase = createServerSupabaseClient();
 
   const {

@@ -3,9 +3,17 @@ import { stripe } from "@/lib/stripe/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { STRIPE_PLANS } from "@/lib/stripe/plans";
 import { TIERS } from "@/lib/constants";
+import { verifyCsrf } from "@/lib/csrf";
+import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
 import type { Tier } from "@/lib/supabase/types";
 
 export async function POST(req: NextRequest) {
+  if (!verifyCsrf(req)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const rl = rateLimit(getRateLimitKey(req, "stripe-checkout"), 5, 60_000);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     // Check Stripe keys are configured
     if (!process.env.STRIPE_SECRET_KEY) {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
 
 // Price data is proxied through the VPS dashboard (port 5000)
 // because Capital.com rejects auth from Vercel's serverless IPs.
@@ -8,6 +9,9 @@ const ALLOWED_EPICS = ["BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD", "LTCU
 const ALLOWED_RESOLUTIONS = ["MINUTE_15", "HOUR", "HOUR_4", "DAY"];
 
 export async function GET(request: NextRequest) {
+  const rl = rateLimit(getRateLimitKey(request, "prices"), 30, 60_000);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const { searchParams } = new URL(request.url);
   const epic = searchParams.get("epic") || "BTCUSD";
   const resolution = searchParams.get("resolution") || "HOUR";

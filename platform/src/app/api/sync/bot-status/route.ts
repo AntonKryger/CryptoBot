@@ -1,8 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { verifySyncSecret } from "@/lib/sync-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
+  const rl = rateLimit(getRateLimitKey(request, "sync-status"), 60, 60_000);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   if (!verifySyncSecret(request)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

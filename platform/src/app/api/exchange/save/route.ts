@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { encrypt } from "@/lib/crypto";
+import { verifyCsrf } from "@/lib/csrf";
+import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
+  if (!verifyCsrf(request)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const rl = rateLimit(getRateLimitKey(request, "exchange-save"), 10, 60_000);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     // Authenticate user
     const supabase = createServerSupabaseClient();
