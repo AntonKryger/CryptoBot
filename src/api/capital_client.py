@@ -105,7 +105,14 @@ class CapitalClient:
             available_names.append(name)
             if name.lower() == account_name.lower():
                 account_id = account["accountId"]
-                self._request("PUT", "/api/v1/session", json={"accountId": account_id})
+                try:
+                    self._request("PUT", "/api/v1/session", json={"accountId": account_id})
+                except requests.exceptions.HTTPError as e:
+                    # Capital.com returns 400 if already on this account
+                    if "400" in str(e):
+                        logger.info(f"Already on account: {account_name} (ID: {account_id})")
+                        return
+                    raise
                 logger.info(f"Switched to account: {account_name} (ID: {account_id})")
                 return
         # HARD FAIL: never silently fall back to default account
