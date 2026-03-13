@@ -4,6 +4,7 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import Image from "next/image";
 import {
   Cpu,
   Play,
@@ -15,11 +16,13 @@ import {
   Zap,
 } from "lucide-react";
 import type { BadgeProps } from "@/components/ui/badge";
+import { EXCHANGE_PROVIDERS, type ExchangeId } from "@/lib/exchanges";
 
 interface BotInstance {
   id: string;
   name: string;
   status: "running" | "stopped" | "error";
+  exchange: ExchangeId;
   coins: string[];
   riskPercent: number;
   maxPositions: number;
@@ -37,6 +40,7 @@ const mockBots: BotInstance[] = [
     id: "1",
     name: "AI Strategy Bot",
     status: "running",
+    exchange: "capital_com",
     coins: ["BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD", "LTCUSD"],
     riskPercent: 1.5,
     maxPositions: 5,
@@ -52,6 +56,7 @@ const mockBots: BotInstance[] = [
     id: "2",
     name: "Rule-Based Bot",
     status: "stopped",
+    exchange: "capital_com",
     coins: ["BTCUSD", "LINKUSD"],
     riskPercent: 1.0,
     maxPositions: 3,
@@ -67,6 +72,7 @@ const mockBots: BotInstance[] = [
     id: "3",
     name: "Demo Bot",
     status: "error",
+    exchange: "capital_com",
     coins: ["BTCUSD", "ETHUSD"],
     riskPercent: 2.0,
     maxPositions: 5,
@@ -179,7 +185,20 @@ export default function BotsPage() {
                   </div>
                 </div>
 
-                <p className="text-xs text-text-muted leading-relaxed">
+                <div className="flex items-center gap-1.5 mt-2">
+                  <Image
+                    src={EXCHANGE_PROVIDERS[bot.exchange].logo}
+                    alt={EXCHANGE_PROVIDERS[bot.exchange].name}
+                    width={16}
+                    height={16}
+                    className="rounded"
+                  />
+                  <span className="text-xs text-text-muted">
+                    {EXCHANGE_PROVIDERS[bot.exchange].name}
+                  </span>
+                </div>
+
+                <p className="text-xs text-text-muted leading-relaxed mt-2">
                   {bot.description}
                 </p>
               </div>

@@ -32,11 +32,11 @@ export const metadata: Metadata = {
     template: "%s — CryptoBot",
   },
   description:
-    "Autonomous AI crypto trading on your Capital.com account. Fully managed, transparent, profitable. Start trading smarter today.",
+    "Autonomous AI crypto trading across multiple exchanges. Fully managed, transparent, profitable. Start trading smarter today.",
   keywords: [
     "crypto trading",
     "AI trading bot",
-    "Capital.com",
+    "multi-exchange",
     "automated trading",
     "cryptocurrency",
     "bitcoin",
@@ -52,7 +52,7 @@ export const metadata: Metadata = {
     siteName: "CryptoBot",
     title: "CryptoBot — AI-Powered Crypto Trading Platform",
     description:
-      "Autonomous AI crypto trading on your Capital.com account. Fully managed, transparent, profitable.",
+      "Autonomous AI crypto trading across multiple exchanges. Fully managed, transparent, profitable.",
     images: [
       {
         url: "/og-image.png",
@@ -66,7 +66,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "CryptoBot — AI-Powered Crypto Trading Platform",
     description:
-      "Autonomous AI crypto trading on your Capital.com account. Fully managed, transparent, profitable.",
+      "Autonomous AI crypto trading across multiple exchanges. Fully managed, transparent, profitable.",
     images: ["/og-image.png"],
   },
   robots: {

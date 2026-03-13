@@ -16,7 +16,7 @@ const FEATURES = [
   {
     icon: Zap,
     title: "Instant Execution",
-    description: "Sub-second trade execution on Capital.com CFDs",
+    description: "Sub-second trade execution across supported exchanges",
   },
   {
     icon: BarChart3,

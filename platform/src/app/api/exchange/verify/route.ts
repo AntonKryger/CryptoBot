@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { verifyCsrf } from "@/lib/csrf";
 import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
+import { EXCHANGE_PROVIDERS, type ExchangeId } from "@/lib/exchanges";
 
 export async function POST(request: NextRequest) {
   if (!verifyCsrf(request)) {
@@ -11,7 +12,6 @@ export async function POST(request: NextRequest) {
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
-    // Authenticate user — always required
     const supabase = createServerSupabaseClient();
     const {
       data: { user },
@@ -25,52 +25,63 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { environment, apiKey, apiPassword, identifier } = body;
+    const { exchange, environment, credentials } = body as {
+      exchange: string;
+      environment: string;
+      credentials: Record<string, string>;
+    };
 
-    // Validate required fields
-    if (!environment || !apiKey || !apiPassword || !identifier) {
+    // Validate exchange
+    const provider = EXCHANGE_PROVIDERS[exchange as ExchangeId];
+    if (!provider) {
       return NextResponse.json(
-        { error: "All fields are required: environment, apiKey, apiPassword, identifier" },
+        { error: "Unknown exchange" },
         { status: 400 }
       );
     }
 
-    if (!["demo", "live"].includes(environment)) {
+    if (provider.status !== "active") {
+      return NextResponse.json(
+        { error: `${provider.name} is not yet available. Coming soon!` },
+        { status: 400 }
+      );
+    }
+
+    // Validate environment
+    if (provider.hasEnvironments && !["demo", "live"].includes(environment)) {
       return NextResponse.json(
         { error: "Environment must be 'demo' or 'live'" },
         { status: 400 }
       );
     }
 
-    if (apiKey.trim().length === 0) {
-      return NextResponse.json(
-        { error: "API Key cannot be empty" },
-        { status: 400 }
-      );
+    // Validate all required credential fields are present and non-empty
+    for (const field of provider.credentialFields) {
+      const value = credentials?.[field.key];
+      if (!value || value.trim().length === 0) {
+        return NextResponse.json(
+          { error: `${field.label} cannot be empty` },
+          { status: 400 }
+        );
+      }
     }
 
-    if (apiPassword.trim().length === 0) {
-      return NextResponse.json(
-        { error: "API Password cannot be empty" },
-        { status: 400 }
-      );
+    // Exchange-specific verification
+    if (exchange === "capital_com") {
+      // TODO: Real Capital.com API verification
+      // In production, this would make a test session request to:
+      //   Demo: https://demo-api-capital.backend-capital.com/api/v1/session
+      //   Live: https://api-capital.backend-capital.com/api/v1/session
+      // with headers: X-CAP-API-KEY, body: { identifier, password }
+      return NextResponse.json({ success: true });
     }
 
-    if (identifier.trim().length === 0) {
-      return NextResponse.json(
-        { error: "Identifier cannot be empty" },
-        { status: 400 }
-      );
-    }
-
-    // TODO: Real Capital.com API verification
-    // For now, validate that fields are non-empty and return success.
-    // In production, this would make a test session request to:
-    //   Demo: https://demo-api-capital.backend-capital.com/api/v1/session
-    //   Live: https://api-capital.backend-capital.com/api/v1/session
-    // with headers: X-CAP-API-KEY, body: { identifier, password }
-
-    return NextResponse.json({ success: true });
+    // Coming-soon exchanges should never reach here (blocked above),
+    // but just in case:
+    return NextResponse.json(
+      { error: `Verification for ${provider.name} is not yet implemented` },
+      { status: 400 }
+    );
   } catch (error) {
     console.error("Exchange verify error:", error);
     return NextResponse.json(

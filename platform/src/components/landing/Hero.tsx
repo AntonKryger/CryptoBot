@@ -30,7 +30,7 @@ export default function Hero() {
 
         {/* Subheadline */}
         <p className="text-lg sm:text-xl text-text-secondary max-w-2xl mx-auto mb-10 leading-relaxed">
-          Autonomous trading bot on your Capital.com account. Set up in minutes,
+          Autonomous trading bot across multiple exchanges. Set up in minutes,
           profit 24/7.
         </p>
 

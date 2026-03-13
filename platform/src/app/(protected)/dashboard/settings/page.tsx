@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -17,6 +18,7 @@ import {
   LogOut,
   Save,
   Check,
+  Link2,
 } from "lucide-react";
 
 const THEME_ACCENT_COLORS: Record<Theme, string> = {
@@ -111,6 +113,32 @@ export default function SettingsPage() {
                 </>
               )}
             </Button>
+          </div>
+        </section>
+
+        {/* Exchange Connection section */}
+        <section className="rounded-xl border border-border bg-bg-card p-6 backdrop-blur-sm shadow-sm">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-muted">
+              <Link2 className="h-5 w-5 text-accent" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">Exchange Connection</h2>
+              <p className="text-sm text-text-muted">Your connected trading exchange</p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-bg-secondary flex items-center justify-center">
+                <span className="text-lg font-bold text-accent">C</span>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-text-primary">Capital.com</p>
+                <p className="text-xs text-text-muted">Demo account connected</p>
+              </div>
+            </div>
+            <Badge variant="success">Connected</Badge>
           </div>
         </section>
 

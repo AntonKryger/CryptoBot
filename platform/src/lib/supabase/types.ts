@@ -22,14 +22,14 @@ export interface Profile {
   updated_at: string;
 }
 
+export type ExchangeId = "capital_com" | "binance" | "kraken" | "bybit" | "okx" | "coinbase";
+
 export interface ExchangeAccount {
   id: string;
   user_id: string;
-  exchange: "capital_com";
+  exchange: ExchangeId;
   environment: "demo" | "live";
-  api_key_encrypted: string;
-  api_password_encrypted: string | null;
-  identifier_encrypted: string | null;
+  credentials_encrypted: Record<string, string>;
   is_active: boolean;
   connection_verified: boolean;
   last_verified_at: string | null;
@@ -79,6 +79,7 @@ export interface Trade {
   closed_at: string | null;
   signal_mode: string | null;
   signal_data: Record<string, unknown> | null;
+  exchange_provider: string;
   created_at: string;
   updated_at: string;
 }

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   Rocket,
   Link2,
@@ -18,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ALLOWED_COINS, TIERS } from "@/lib/constants";
+import { ALL_EXCHANGES, type ExchangeId, type ExchangeProvider } from "@/lib/exchanges";
 import type { Tier } from "@/types";
 
 interface OnboardingWizardProps {
@@ -45,7 +47,6 @@ function ProgressBar({ currentStep }: { currentStep: number }) {
   return (
     <div className="w-full mb-8">
       <div className="flex items-center justify-between relative">
-        {/* Connecting line behind the steps */}
         <div className="absolute top-5 left-0 right-0 h-0.5 bg-border" />
         <div
           className="absolute top-5 left-0 h-0.5 bg-accent transition-all duration-500 ease-out"
@@ -161,28 +162,51 @@ function StepExchange({
   onBack,
   exchangeAccountId,
   setExchangeAccountId,
+  selectedExchange,
+  setSelectedExchange,
 }: {
   email: string;
   onNext: () => void;
   onBack: () => void;
   exchangeAccountId: string | null;
   setExchangeAccountId: (id: string) => void;
+  selectedExchange: ExchangeId;
+  setSelectedExchange: (id: ExchangeId) => void;
 }) {
   const [environment, setEnvironment] = useState<"demo" | "live">("demo");
-  const [apiKey, setApiKey] = useState("");
-  const [apiPassword, setApiPassword] = useState("");
-  const [identifier, setIdentifier] = useState(email);
-  const [showPassword, setShowPassword] = useState(false);
+  const [credentials, setCredentials] = useState<Record<string, string>>({
+    identifier: email,
+  });
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [verifying, setVerifying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verified, setVerified] = useState(false);
   const [saved, setSaved] = useState(!!exchangeAccountId);
   const [error, setError] = useState("");
 
+  const exchange = ALL_EXCHANGES.find((e) => e.id === selectedExchange)!;
+  const isActive = exchange.status === "active";
+
   const canVerify =
-    apiKey.trim() !== "" &&
-    apiPassword.trim() !== "" &&
-    identifier.trim() !== "";
+    isActive &&
+    exchange.credentialFields.every(
+      (f) => (credentials[f.key] || "").trim() !== ""
+    );
+
+  function handleExchangeSelect(ex: ExchangeProvider) {
+    setSelectedExchange(ex.id);
+    setVerified(false);
+    setSaved(false);
+    setError("");
+    // Keep identifier if switching
+    setCredentials({ identifier: email });
+  }
+
+  function updateCredential(key: string, value: string) {
+    setCredentials((prev) => ({ ...prev, [key]: value }));
+    setVerified(false);
+    setSaved(false);
+  }
 
   async function handleVerify() {
     setVerifying(true);
@@ -193,7 +217,11 @@ function StepExchange({
       const res = await fetch("/api/exchange/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment, apiKey, apiPassword, identifier }),
+        body: JSON.stringify({
+          exchange: selectedExchange,
+          environment,
+          credentials,
+        }),
       });
 
       const data = await res.json();
@@ -219,7 +247,11 @@ function StepExchange({
       const res = await fetch("/api/exchange/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment, apiKey, apiPassword, identifier }),
+        body: JSON.stringify({
+          exchange: selectedExchange,
+          environment,
+          credentials,
+        }),
       });
 
       const data = await res.json();
@@ -246,107 +278,139 @@ function StepExchange({
           Connect Your Exchange
         </h2>
         <p className="text-text-secondary">
-          Enter your Capital.com API credentials to connect your account.
+          Select your exchange and enter your API credentials.
         </p>
       </div>
 
-      {/* Environment selector */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium text-text-primary">
-          Environment
-        </label>
-        <div className="flex gap-3">
-          {(["demo", "live"] as const).map((env) => (
+      {/* Exchange picker grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {ALL_EXCHANGES.map((ex) => {
+          const isSelected = ex.id === selectedExchange;
+          const isComingSoon = ex.status === "coming_soon";
+
+          return (
             <button
-              key={env}
+              key={ex.id}
               type="button"
-              onClick={() => {
-                setEnvironment(env);
-                setVerified(false);
-                setSaved(false);
-              }}
+              disabled={isComingSoon}
+              onClick={() => handleExchangeSelect(ex)}
               className={`
-                flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all border
+                relative flex flex-col items-center gap-2 p-4 rounded-lg border transition-all
                 ${
-                  environment === env
-                    ? "bg-accent text-white border-accent"
-                    : "bg-bg-secondary text-text-secondary border-border hover:border-border-hover"
+                  isSelected
+                    ? "border-accent bg-accent-muted ring-1 ring-accent"
+                    : isComingSoon
+                    ? "border-border bg-bg-secondary opacity-60 cursor-not-allowed"
+                    : "border-border bg-bg-secondary hover:border-border-hover"
                 }
               `}
             >
-              {env === "demo" ? "Demo" : "Live"}
+              {isComingSoon && (
+                <Badge
+                  variant="outline"
+                  className="absolute -top-2 -right-2 text-[10px] px-1.5 py-0.5"
+                >
+                  Soon
+                </Badge>
+              )}
+              <Image
+                src={ex.logo}
+                alt={ex.name}
+                width={32}
+                height={32}
+                className="rounded"
+              />
+              <span
+                className={`text-xs font-medium ${
+                  isSelected ? "text-accent" : "text-text-secondary"
+                }`}
+              >
+                {ex.name}
+              </span>
             </button>
-          ))}
+          );
+        })}
+      </div>
+
+      {/* Environment selector — only if exchange supports it */}
+      {isActive && exchange.hasEnvironments && (
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-text-primary">
+            Environment
+          </label>
+          <div className="flex gap-3">
+            {(["demo", "live"] as const).map((env) => (
+              <button
+                key={env}
+                type="button"
+                onClick={() => {
+                  setEnvironment(env);
+                  setVerified(false);
+                  setSaved(false);
+                }}
+                className={`
+                  flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all border
+                  ${
+                    environment === env
+                      ? "bg-accent text-white border-accent"
+                      : "bg-bg-secondary text-text-secondary border-border hover:border-border-hover"
+                  }
+                `}
+              >
+                {env === "demo" ? "Demo" : "Live"}
+              </button>
+            ))}
+          </div>
+          {environment === "live" && (
+            <p className="text-xs text-warning">
+              Live mode trades with real money. Make sure you understand the risks.
+            </p>
+          )}
         </div>
-        {environment === "live" && (
-          <p className="text-xs text-warning">
-            Live mode trades with real money. Make sure you understand the risks.
-          </p>
-        )}
-      </div>
+      )}
 
-      {/* API Key */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium text-text-primary">
-          API Key
-        </label>
-        <Input
-          value={apiKey}
-          onChange={(e) => {
-            setApiKey(e.target.value);
-            setVerified(false);
-            setSaved(false);
-          }}
-          placeholder="Enter your Capital.com API key"
-        />
-      </div>
-
-      {/* API Password */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium text-text-primary">
-          API Password
-        </label>
-        <div className="relative">
-          <Input
-            type={showPassword ? "text" : "password"}
-            value={apiPassword}
-            onChange={(e) => {
-              setApiPassword(e.target.value);
-              setVerified(false);
-              setSaved(false);
-            }}
-            placeholder="Enter your API password"
-            className="pr-10"
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary transition-colors"
-          >
-            {showPassword ? (
-              <EyeOff className="w-4 h-4" />
+      {/* Dynamic credential fields */}
+      {isActive &&
+        exchange.credentialFields.map((field) => (
+          <div key={field.key} className="space-y-2">
+            <label className="text-sm font-medium text-text-primary">
+              {field.label}
+            </label>
+            {field.type === "password" ? (
+              <div className="relative">
+                <Input
+                  type={showSecrets[field.key] ? "text" : "password"}
+                  value={credentials[field.key] || ""}
+                  onChange={(e) => updateCredential(field.key, e.target.value)}
+                  placeholder={field.placeholder}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setShowSecrets((prev) => ({
+                      ...prev,
+                      [field.key]: !prev[field.key],
+                    }))
+                  }
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary transition-colors"
+                >
+                  {showSecrets[field.key] ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
             ) : (
-              <Eye className="w-4 h-4" />
+              <Input
+                value={credentials[field.key] || ""}
+                onChange={(e) => updateCredential(field.key, e.target.value)}
+                placeholder={field.placeholder}
+              />
             )}
-          </button>
-        </div>
-      </div>
-
-      {/* Identifier */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium text-text-primary">
-          Identifier / Email
-        </label>
-        <Input
-          value={identifier}
-          onChange={(e) => {
-            setIdentifier(e.target.value);
-            setVerified(false);
-            setSaved(false);
-          }}
-          placeholder="Your Capital.com email"
-        />
-      </div>
+          </div>
+        ))}
 
       {/* Error message */}
       {error && (
@@ -590,13 +654,17 @@ function StepBotConfig({
 function StepComplete({
   botConfig,
   exchangeAccountId,
+  selectedExchange,
 }: {
   botConfig: BotConfig;
   exchangeAccountId: string | null;
+  selectedExchange: ExchangeId;
 }) {
   const router = useRouter();
   const [completing, setCompleting] = useState(false);
   const [error, setError] = useState("");
+
+  const exchange = ALL_EXCHANGES.find((e) => e.id === selectedExchange);
 
   async function handleComplete() {
     setCompleting(true);
@@ -648,7 +716,18 @@ function StepComplete({
       <div className="bg-bg-secondary rounded-lg p-4 max-w-sm mx-auto text-left space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm text-text-muted">Exchange</span>
-          <Badge variant="success">Connected</Badge>
+          <div className="flex items-center gap-2">
+            {exchange && (
+              <Image
+                src={exchange.logo}
+                alt={exchange.name}
+                width={16}
+                height={16}
+                className="rounded"
+              />
+            )}
+            <Badge variant="success">{exchange?.name || "Connected"}</Badge>
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <span className="text-sm text-text-muted">Bot name</span>
@@ -711,6 +790,7 @@ export function OnboardingWizard({ tier, email }: OnboardingWizardProps) {
   const [exchangeAccountId, setExchangeAccountId] = useState<string | null>(
     null
   );
+  const [selectedExchange, setSelectedExchange] = useState<ExchangeId>("capital_com");
   const [botConfig, setBotConfig] = useState<BotConfig>({
     name: "My CryptoBot",
     coins: ["BTCUSD", "ETHUSD"],
@@ -741,6 +821,8 @@ export function OnboardingWizard({ tier, email }: OnboardingWizardProps) {
               onBack={goBack}
               exchangeAccountId={exchangeAccountId}
               setExchangeAccountId={setExchangeAccountId}
+              selectedExchange={selectedExchange}
+              setSelectedExchange={setSelectedExchange}
             />
           )}
 
@@ -758,6 +840,7 @@ export function OnboardingWizard({ tier, email }: OnboardingWizardProps) {
             <StepComplete
               botConfig={botConfig}
               exchangeAccountId={exchangeAccountId}
+              selectedExchange={selectedExchange}
             />
           )}
         </div>

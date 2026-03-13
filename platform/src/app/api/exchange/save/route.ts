@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { encrypt } from "@/lib/crypto";
 import { verifyCsrf } from "@/lib/csrf";
 import { rateLimit, getRateLimitKey, rateLimitResponse } from "@/lib/rate-limit";
+import { EXCHANGE_PROVIDERS, type ExchangeId } from "@/lib/exchanges";
 
 export async function POST(request: NextRequest) {
   if (!verifyCsrf(request)) {
@@ -12,7 +13,6 @@ export async function POST(request: NextRequest) {
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
-    // Authenticate user
     const supabase = createServerSupabaseClient();
     const {
       data: { user },
@@ -26,46 +26,70 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { environment, apiKey, apiPassword, identifier } = body;
+    const { exchange, environment, credentials } = body as {
+      exchange: string;
+      environment: string;
+      credentials: Record<string, string>;
+    };
 
-    // Validate required fields
-    if (!environment || !apiKey || !apiPassword || !identifier) {
+    // Validate exchange
+    const provider = EXCHANGE_PROVIDERS[exchange as ExchangeId];
+    if (!provider) {
       return NextResponse.json(
-        { error: "All fields are required: environment, apiKey, apiPassword, identifier" },
+        { error: "Unknown exchange" },
         { status: 400 }
       );
     }
 
-    if (!["demo", "live"].includes(environment)) {
+    if (provider.status !== "active") {
+      return NextResponse.json(
+        { error: `${provider.name} is not yet available` },
+        { status: 400 }
+      );
+    }
+
+    // Validate environment
+    if (provider.hasEnvironments && !["demo", "live"].includes(environment)) {
       return NextResponse.json(
         { error: "Environment must be 'demo' or 'live'" },
         { status: 400 }
       );
     }
 
-    // Encrypt credentials
-    const apiKeyEncrypted = await encrypt(apiKey);
-    const apiPasswordEncrypted = await encrypt(apiPassword);
-    const identifierEncrypted = await encrypt(identifier);
+    // Validate all required credential fields are present and non-empty
+    for (const field of provider.credentialFields) {
+      const value = credentials?.[field.key];
+      if (!value || value.trim().length === 0) {
+        return NextResponse.json(
+          { error: `${field.label} is required` },
+          { status: 400 }
+        );
+      }
+    }
 
-    // Check for existing account with same environment
+    // Encrypt each credential value individually
+    const credentialsEncrypted: Record<string, string> = {};
+    for (const field of provider.credentialFields) {
+      credentialsEncrypted[field.key] = await encrypt(credentials[field.key]);
+    }
+
+    // Dedup on user_id + exchange + environment
+    const env = provider.hasEnvironments ? environment : "live";
     const { data: existing } = await supabase
       .from("exchange_accounts")
       .select("id")
       .eq("user_id", user.id)
-      .eq("environment", environment)
+      .eq("exchange", exchange)
+      .eq("environment", env)
       .single();
 
     let accountId: string;
 
     if (existing) {
-      // Update existing account
       const { data, error } = await supabase
         .from("exchange_accounts")
         .update({
-          api_key_encrypted: apiKeyEncrypted,
-          api_password_encrypted: apiPasswordEncrypted,
-          identifier_encrypted: identifierEncrypted,
+          credentials_encrypted: credentialsEncrypted,
           connection_verified: true,
           last_verified_at: new Date().toISOString(),
           is_active: true,
@@ -85,16 +109,13 @@ export async function POST(request: NextRequest) {
 
       accountId = data.id;
     } else {
-      // Insert new account
       const { data, error } = await supabase
         .from("exchange_accounts")
         .insert({
           user_id: user.id,
-          exchange: "capital_com",
-          environment,
-          api_key_encrypted: apiKeyEncrypted,
-          api_password_encrypted: apiPasswordEncrypted,
-          identifier_encrypted: identifierEncrypted,
+          exchange,
+          environment: env,
+          credentials_encrypted: credentialsEncrypted,
           connection_verified: true,
           last_verified_at: new Date().toISOString(),
           is_active: true,
