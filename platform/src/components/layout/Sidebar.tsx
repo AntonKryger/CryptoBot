@@ -6,6 +6,7 @@ import {
   Bot,
   LayoutDashboard,
   BarChart3,
+  CandlestickChart,
   Settings,
   Users,
   Server,
@@ -22,6 +23,7 @@ interface NavItem {
 
 const mainNav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { label: "Charts", href: "/dashboard/charts", icon: CandlestickChart },
   { label: "Trades", href: "/dashboard/trades", icon: BarChart3 },
   { label: "Bots", href: "/dashboard/bots", icon: Bot },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },

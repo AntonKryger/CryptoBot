@@ -389,6 +389,116 @@ class ChartAnalysis:
 
         return patterns
 
+    # D5: Market Structure (Higher Highs/Lows sequence — Elliott Wave simplified)
+    @staticmethod
+    def detect_market_structure(df, window=5):
+        """Detect market structure: sequence of swing highs/lows to determine
+        if we're in an impulse (trending) or corrective (ranging/pullback) move.
+
+        This is a simplified Elliott Wave approach:
+        - HH + HL = bullish impulse (wave 1/3/5)
+        - LH + LL = bearish impulse (wave 1/3/5 down)
+        - Mixed = corrective (wave 2/4/ABC)
+
+        Returns:
+            dict with structure type, swing sequence, and wave context
+        """
+        if df is None or len(df) < 30:
+            return None
+
+        # Find swing points
+        swings = []
+        for i in range(window, len(df) - window):
+            if df["low"].iloc[i] == df["low"].iloc[i - window:i + window + 1].min():
+                swings.append({"idx": i, "price": float(df["low"].iloc[i]), "type": "low"})
+            if df["high"].iloc[i] == df["high"].iloc[i - window:i + window + 1].max():
+                swings.append({"idx": i, "price": float(df["high"].iloc[i]), "type": "high"})
+
+        swings.sort(key=lambda s: s["idx"])
+
+        if len(swings) < 4:
+            return None
+
+        # Analyze the last 6-8 swing points for structure
+        recent_swings = swings[-8:]
+        highs = [s for s in recent_swings if s["type"] == "high"]
+        lows = [s for s in recent_swings if s["type"] == "low"]
+
+        if len(highs) < 2 or len(lows) < 2:
+            return None
+
+        # Determine HH/LH and HL/LL
+        hh_count = 0  # higher highs
+        lh_count = 0  # lower highs
+        hl_count = 0  # higher lows
+        ll_count = 0  # lower lows
+
+        for i in range(1, len(highs)):
+            if highs[i]["price"] > highs[i-1]["price"]:
+                hh_count += 1
+            else:
+                lh_count += 1
+
+        for i in range(1, len(lows)):
+            if lows[i]["price"] > lows[i-1]["price"]:
+                hl_count += 1
+            else:
+                ll_count += 1
+
+        current_price = float(df["close"].iloc[-1])
+        last_high = highs[-1]["price"]
+        last_low = lows[-1]["price"]
+
+        # Determine structure
+        if hh_count >= lh_count and hl_count >= ll_count and hh_count > 0:
+            structure = "BULLISH_IMPULSE"
+            description = f"Higher Highs ({hh_count}) + Higher Lows ({hl_count}) = Bullish impulse"
+            bias = "BUY"
+        elif lh_count >= hh_count and ll_count >= hl_count and lh_count > 0:
+            structure = "BEARISH_IMPULSE"
+            description = f"Lower Highs ({lh_count}) + Lower Lows ({ll_count}) = Bearish impulse"
+            bias = "SELL"
+        elif hh_count > 0 and ll_count > 0:
+            structure = "CORRECTIVE"
+            description = f"Mixed swings (HH:{hh_count} LH:{lh_count} HL:{hl_count} LL:{ll_count}) = Corrective/ranging"
+            bias = "NEUTRAL"
+        else:
+            structure = "UNCLEAR"
+            description = "Insufficient swing data for structure"
+            bias = "NEUTRAL"
+
+        # Wave position estimate
+        # If bullish: price near last low = potential wave start (buy zone)
+        # If bullish: price near last high = potential wave top (caution)
+        range_size = last_high - last_low if last_high > last_low else 1
+        position_in_wave = (current_price - last_low) / range_size * 100 if range_size > 0 else 50
+
+        # Key levels from structure
+        key_support = last_low
+        key_resistance = last_high
+
+        # Detect if current price is breaking structure
+        breaking_up = current_price > last_high
+        breaking_down = current_price < last_low
+
+        return {
+            "structure": structure,
+            "description": description,
+            "bias": bias,
+            "hh": hh_count, "lh": lh_count,
+            "hl": hl_count, "ll": ll_count,
+            "last_swing_high": round(last_high, 4),
+            "last_swing_low": round(last_low, 4),
+            "position_in_wave": round(position_in_wave, 1),
+            "key_support": round(key_support, 4),
+            "key_resistance": round(key_resistance, 4),
+            "breaking_up": breaking_up,
+            "breaking_down": breaking_down,
+            "swing_sequence": [
+                {"type": s["type"], "price": round(s["price"], 4)} for s in recent_swings[-6:]
+            ],
+        }
+
     @staticmethod
     def get_full_analysis(df, lookback=100):
         """Run all chart analyses and return combined result."""
@@ -397,6 +507,7 @@ class ChartAnalysis:
             "sr_zones": ChartAnalysis.find_sr_zones(df),
             "trendlines": ChartAnalysis.detect_trendlines(df),
             "patterns": ChartAnalysis.detect_patterns(df),
+            "market_structure": ChartAnalysis.detect_market_structure(df),
         }
         return result
 
@@ -450,6 +561,36 @@ class ChartAnalysis:
                     f"target={p['target']:.4f})"
                 )
             sections.append("CHART PATTERNS:\n" + "\n".join(pat_lines))
+
+        # Market Structure (wave analysis)
+        ms = analysis.get("market_structure")
+        if ms:
+            ms_lines = [
+                f"MARKET STRUCTURE: {ms['structure']}",
+                f"  {ms['description']}",
+                f"  Swing High: {ms['last_swing_high']} | Swing Low: {ms['last_swing_low']}",
+                f"  Position in wave: {ms['position_in_wave']:.0f}% (0%=near low, 100%=near high)",
+                f"  Key Support: {ms['key_support']} | Key Resistance: {ms['key_resistance']}",
+            ]
+            if ms["breaking_up"]:
+                ms_lines.append("  ⚡ BREAKOUT: Price ABOVE last swing high — potential new impulse wave UP")
+            elif ms["breaking_down"]:
+                ms_lines.append("  ⚡ BREAKDOWN: Price BELOW last swing low — potential new impulse wave DOWN")
+
+            if ms["structure"] == "BULLISH_IMPULSE":
+                ms_lines.append("  → Bullish structure: BUY pullbacks to support. SHORT only at extreme resistance with high confidence.")
+            elif ms["structure"] == "BEARISH_IMPULSE":
+                ms_lines.append("  → Bearish structure: SELL rallies to resistance. BUY only at extreme support with high confidence.")
+            elif ms["structure"] == "CORRECTIVE":
+                ms_lines.append("  → Corrective/ranging: Trade the RANGE — BUY near support, SELL near resistance. Wait for structure break for trend trades.")
+
+            # Swing sequence for context
+            seq = ms.get("swing_sequence", [])
+            if seq:
+                seq_str = " → ".join(f"{s['type'].upper()}:{s['price']}" for s in seq)
+                ms_lines.append(f"  Swing sequence: {seq_str}")
+
+            sections.append("\n".join(ms_lines))
 
         return "\n\n".join(sections)
 

@@ -71,12 +71,17 @@ class LLMAdvisor:
         self.client = anthropic.Anthropic(api_key=self.api_key)
         self._last_request = 0
         self._request_delay = 2.0
+        self._market_data = None  # Set via set_market_data()
 
     def _rate_limit(self):
         elapsed = time.time() - self._last_request
         if elapsed < self._request_delay:
             time.sleep(self._request_delay - elapsed)
         self._last_request = time.time()
+
+    def set_market_data(self, market_data_provider):
+        """Attach market data provider for context-aware analysis."""
+        self._market_data = market_data_provider
 
     def analyze_bot(self, bot_id, bot_type, stats, trade_count):
         """Get LLM recommendations for a single bot.
@@ -133,11 +138,29 @@ class LLMAdvisor:
             return None, 0
 
     def _build_prompt(self, bot_id, bot_type, stats, trade_count):
-        """Build analysis prompt with all statistics."""
+        """Build analysis prompt with all statistics and market context."""
         sections = [
             f"Analysér bot '{bot_id}' (type: {bot_type}, {trade_count} lukkede trades).",
             "",
         ]
+
+        # Add live market context if available
+        if self._market_data and self._market_data.enabled:
+            try:
+                market_ctx = self._market_data.format_market_context()
+                if market_ctx:
+                    sections.append(market_ctx)
+                    sections.append("")
+
+                # Add per-coin context for coins this bot trades
+                coins_traded = list(stats.get("by_coin", {}).keys())
+                for coin in coins_traded[:3]:  # Top 3 most traded coins
+                    epic = coin if coin.endswith("USD") else f"{coin}USD"
+                    coin_ctx = self._market_data.get_coin_context(epic)
+                    if coin_ctx:
+                        sections.append(coin_ctx)
+            except Exception as e:
+                logger.warning(f"[Coach] Market data failed for {bot_id}: {e}")
 
         # Win rate by regime
         if stats.get("by_regime"):

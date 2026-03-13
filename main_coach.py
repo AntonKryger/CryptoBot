@@ -17,6 +17,7 @@ from src.coach.data_collector import discover_bots, load_trades, get_bot_type
 from src.coach.analyzer import full_bot_analysis, cross_bot_comparison
 from src.coach.coach_db import CoachDB
 from src.coach.llm_advisor import LLMAdvisor
+from src.coach.market_data import CoachMarketData
 from src.coach.formatters import (
     format_report_summary,
     format_recommendations,
@@ -55,6 +56,8 @@ class Coach:
         # Components
         self.db = CoachDB(config.get("database", {}).get("path", "data/coach.db"))
         self.advisor = LLMAdvisor(config)
+        self.market_data = CoachMarketData(config)
+        self.advisor.set_market_data(self.market_data)
         self.notifier = TelegramNotifier(config)
 
         # Discover bots
@@ -71,6 +74,7 @@ class Coach:
         self.notifier.register_command("/coach_approve", self._cmd_approve)
         self.notifier.register_command("/coach_reject", self._cmd_reject)
         self.notifier.register_command("/coach_bot", self._cmd_bot)
+        self.notifier.register_command("/coach_market", self._cmd_market)
         self.notifier.register_command("/help", self._cmd_help)
         self.notifier.register_command("/start", self._cmd_help)
 
@@ -143,6 +147,30 @@ class Coach:
         stats = full_bot_analysis(df, bot_type)
         return format_bot_report(bot_id, stats)
 
+    def _cmd_market(self, args):
+        """Show current market conditions."""
+        if not self.market_data.enabled:
+            return "⚠️ Capital.com credentials ikke konfigureret for coach."
+        try:
+            snapshots = self.market_data.get_all_snapshots()
+            if not snapshots:
+                return "⚠️ Kunne ikke hente markedsdata."
+
+            lines = ["📊 <b>MARKEDSOVERSIGT</b>\n"]
+            for epic, snap in snapshots.items():
+                change = snap.get("change_pct", 0) or 0
+                bid = snap.get("bid", 0) or 0
+                emoji = "🟢" if change > 0.5 else "🔴" if change < -0.5 else "⚪"
+                coin = epic.replace("USD", "")
+                lines.append(f"{emoji} <b>{coin}</b>: ${bid:,.2f} ({change:+.2f}%)")
+
+            changes = [s.get("change_pct", 0) or 0 for s in snapshots.values()]
+            avg = sum(changes) / len(changes) if changes else 0
+            lines.append(f"\n📈 Gennemsnit: {avg:+.2f}%")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"❌ Markedsdata fejl: {e}"
+
     def _cmd_help(self, args):
         return (
             "🏋️ <b>AI Coach Kommandoer</b>\n\n"
@@ -151,7 +179,8 @@ class Coach:
             "/coach_recs — Vis ventende anbefalinger\n"
             "/coach_approve {id} — Godkend anbefaling\n"
             "/coach_reject {id} — Afvis anbefaling\n"
-            "/coach_bot {id} — Detaljer for en specifik bot"
+            "/coach_bot {id} — Detaljer for en specifik bot\n"
+            "/coach_market — Vis aktuelle markedspriser"
         )
 
     # ── Analysis engine ───────────────────────────────────────────
