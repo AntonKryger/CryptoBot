@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createMiddlewareSupabaseClient, createMiddlewareAdminClient } from "@/lib/supabase/middleware";
-import type { Profile } from "@/lib/supabase/types";
+import { createMiddlewareSupabaseClient } from "@/lib/supabase/middleware";
 
 // Routes accessible without authentication
 const PUBLIC_ROUTES = [
@@ -64,7 +63,6 @@ export async function middleware(request: NextRequest) {
   // Helper: create redirect that preserves Supabase auth cookies
   function redirectTo(url: string): NextResponse {
     const redirectResponse = NextResponse.redirect(new URL(url, request.url));
-    // Copy all cookies set by Supabase (token refresh etc.) to the redirect
     response.cookies.getAll().forEach((cookie) => {
       redirectResponse.cookies.set(cookie);
     });
@@ -80,13 +78,14 @@ export async function middleware(request: NextRequest) {
     if (isPublicRoute(pathname)) {
       return response;
     }
-    const loginUrl = `/login?redirect=${encodeURIComponent(pathname)}`;
-    return redirectTo(loginUrl);
+    return redirectTo(`/login?redirect=${encodeURIComponent(pathname)}`);
   }
 
-  // ─── AUTHENTICATED on auth-only routes (login/signup/forgot) → redirect away ───
+  // ─── AUTHENTICATED on auth-only routes → redirect away ───
   if (isAuthOnlyRoute(pathname)) {
-    return redirectTo("/pricing");
+    // Owner → admin, others → pricing
+    const appRole = (user.app_metadata as Record<string, unknown>)?.role;
+    return redirectTo(appRole === "owner" ? "/admin" : "/pricing");
   }
 
   // ─── AUTHENTICATED on public routes → always allow ───
@@ -94,25 +93,10 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  // ─── From here: authenticated + protected route → need profile ───
-  // Use admin client (service role) to bypass RLS — avoids infinite recursion in profiles policies
-  const admin = createMiddlewareAdminClient();
-  const { data: profile, error: profileError } = await admin
-    .from("profiles")
-    .select("role, has_2fa, tier, onboarding_completed, subscription_status")
-    .eq("id", user.id)
-    .single<Pick<Profile, "role" | "has_2fa" | "tier" | "onboarding_completed" | "subscription_status">>();
-
-  // No profile → safe fallback to pricing
-  if (!profile) {
-    if (pathname === "/callback") return response;
-    console.error("[middleware] No profile for user", user.id, profileError?.message);
-    return redirectTo("/pricing");
-  }
-
-  // ─── OWNER → bypass all gates ───
-  if (profile.role === "owner") {
-    // 2FA required for admin — skip for now, owner can set it up from admin
+  // ─── OWNER CHECK: use JWT app_metadata (no DB query, no RLS issues) ───
+  const appRole = (user.app_metadata as Record<string, unknown>)?.role;
+  if (appRole === "owner") {
+    // Owner bypasses ALL gates — admin, dashboard, everything
     return response;
   }
 
@@ -121,15 +105,31 @@ export async function middleware(request: NextRequest) {
     return redirectTo("/pricing");
   }
 
-  // ─── SUBSCRIBER GATES ───
-  // Always allow checkout (that's where they pick/pay for a tier)
-  if (pathname === "/checkout") {
+  // ─── SUBSCRIBER GATES (need profile from DB) ───
+  // Always allow checkout and onboarding
+  if (pathname === "/checkout" || pathname === "/onboarding") {
     return response;
   }
 
-  // Always allow onboarding
-  if (pathname === "/onboarding") {
-    return response;
+  // Query profile for subscriber gate checks
+  // Use service role if available, fall back to anon (may fail with RLS)
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  let profileClient;
+  if (serviceRoleKey) {
+    const { createClient } = await import("@supabase/supabase-js");
+    profileClient = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, serviceRoleKey);
+  } else {
+    profileClient = supabase;
+  }
+
+  const { data: profile } = await profileClient
+    .from("profiles")
+    .select("tier, onboarding_completed, subscription_status")
+    .eq("id", user.id)
+    .single();
+
+  if (!profile) {
+    return redirectTo("/pricing");
   }
 
   // No tier → must pick a plan
@@ -137,7 +137,7 @@ export async function middleware(request: NextRequest) {
     return redirectTo("/pricing");
   }
 
-  // Has tier but no active subscription → must pay
+  // No active subscription → must pay
   if (
     profile.subscription_status === "none" ||
     profile.subscription_status === "canceled"
@@ -145,7 +145,7 @@ export async function middleware(request: NextRequest) {
     return redirectTo("/pricing");
   }
 
-  // Active subscription but onboarding not done → must complete
+  // Active but onboarding not done
   if (
     profile.subscription_status === "active" &&
     !profile.onboarding_completed
@@ -153,7 +153,6 @@ export async function middleware(request: NextRequest) {
     return redirectTo("/onboarding");
   }
 
-  // All gates passed → allow
   return response;
 }
 
