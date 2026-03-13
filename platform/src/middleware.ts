@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createMiddlewareSupabaseClient } from "@/lib/supabase/middleware";
+import { createMiddlewareSupabaseClient, createMiddlewareAdminClient } from "@/lib/supabase/middleware";
 import type { Profile } from "@/lib/supabase/types";
 
 // Routes accessible without authentication
@@ -95,7 +95,9 @@ export async function middleware(request: NextRequest) {
   }
 
   // ─── From here: authenticated + protected route → need profile ───
-  const { data: profile, error: profileError } = await supabase
+  // Use admin client (service role) to bypass RLS — avoids infinite recursion in profiles policies
+  const admin = createMiddlewareAdminClient();
+  const { data: profile, error: profileError } = await admin
     .from("profiles")
     .select("role, has_2fa, tier, onboarding_completed, subscription_status")
     .eq("id", user.id)
