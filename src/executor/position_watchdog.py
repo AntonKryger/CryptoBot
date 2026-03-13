@@ -18,6 +18,10 @@ import threading
 import time
 from datetime import datetime
 
+import pandas as pd
+
+from src.strategy.chart_analysis import ChartAnalysis
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +55,10 @@ class PositionWatchdog:
         # Early exit state
         self._candle_cache = {}        # {epic: {"candles": [...], "timestamp": float}}
         self._candle_cache_ttl = 300   # 5 minutes
+
+        # Market structure cache for exit decisions
+        self._structure_cache = {}     # {epic: {"structure": dict, "timestamp": float}}
+        self._structure_cache_ttl = 600  # 10 minutes
 
         # Dynamic TP state
         self._tp_extensions = {}       # {deal_id: count} - max 2 per position
@@ -107,6 +115,51 @@ class PositionWatchdog:
             return True
         return False
 
+    def _get_market_structure(self, epic):
+        """Get cached market structure for an epic. Fetches 1H candles if stale."""
+        cached = self._structure_cache.get(epic)
+        if cached and (time.time() - cached["timestamp"]) < self._structure_cache_ttl:
+            return cached["structure"]
+
+        try:
+            prices = self.client.get_prices(epic, resolution="HOUR", max_count=100)
+            raw = prices.get("prices", [])
+            if len(raw) < 30:
+                return None
+
+            rows = []
+            for c in raw:
+                rows.append({
+                    "open": (c["openPrice"]["bid"] + c["openPrice"]["ask"]) / 2,
+                    "high": (c["highPrice"]["bid"] + c["highPrice"]["ask"]) / 2,
+                    "low": (c["lowPrice"]["bid"] + c["lowPrice"]["ask"]) / 2,
+                    "close": (c["closePrice"]["bid"] + c["closePrice"]["ask"]) / 2,
+                })
+            df = pd.DataFrame(rows)
+            structure = ChartAnalysis.detect_market_structure(df)
+            self._structure_cache[epic] = {"structure": structure, "timestamp": time.time()}
+            return structure
+        except Exception as e:
+            logger.debug(f"Watchdog: Could not fetch market structure for {epic}: {e}")
+            return None
+
+    def _is_structure_aligned(self, direction, epic):
+        """Check if position direction aligns with current market structure.
+
+        Returns True if: SHORT in BEARISH_IMPULSE, or LONG in BULLISH_IMPULSE.
+        This means the trade is with the structural trend and should be given more room.
+        """
+        structure = self._get_market_structure(epic)
+        if not structure:
+            return False
+
+        struct_type = structure.get("structure", "")
+        if direction == "SELL" and struct_type == "BEARISH_IMPULSE":
+            return True
+        if direction == "BUY" and struct_type == "BULLISH_IMPULSE":
+            return True
+        return False
+
     def _calculate_adaptive_pullback(self, epic, direction, pl_pct, deal_id=None):
         """Calculate adaptive pullback threshold based on ATR, trend, and profit level.
 
@@ -132,6 +185,10 @@ class PositionWatchdog:
                     base_pullback *= 0.5  # Against daily trend: tighter exit
             except Exception:
                 pass
+
+        # Market structure bonus: structure-aligned trades get 1.5x wider pullback
+        if self._is_structure_aligned(direction, epic):
+            base_pullback *= 1.5
 
         # Profit tightening: protect larger gains more aggressively
         if pl_pct > 8.0:
@@ -472,6 +529,14 @@ class PositionWatchdog:
         if not should_close:
             return
 
+        # Structure override: don't close structure-aligned trades on sentiment alone
+        if self._is_structure_aligned(direction, epic):
+            logger.info(
+                f"WATCHDOG: Skipping sentiment close for {epic} — structure-aligned {direction} "
+                f"overrides {bias} time bias (P/L: +{pl_pct:.1f}%)"
+            )
+            return
+
         if self._iteration_count % 25 != 0:
             return
 
@@ -552,6 +617,12 @@ class PositionWatchdog:
             return False
 
         max_hours = self.risk.get_max_hold_hours(epic)
+
+        # Structure-aligned trades get 2x hold time — the trend supports holding
+        if self._is_structure_aligned(direction, epic):
+            max_hours *= 2
+            logger.debug(f"Watchdog: {epic} structure-aligned ({direction}), max hold extended to {max_hours}h")
+
         hold_duration = datetime.now() - entry_time
         hold_hours = hold_duration.total_seconds() / 3600
 
@@ -596,6 +667,12 @@ class PositionWatchdog:
             if age_minutes < 15:
                 return False
 
+        # Structure override: if the trade is aligned with market structure,
+        # don't panic-exit on short-term adverse candles — the trend supports us.
+        # Only skip for 3-candle partial exit; still honor 4+ candle full exit
+        # but require the trade to be losing more than 5% (real danger, not noise).
+        structure_aligned = self._is_structure_aligned(direction, epic)
+
         candle_data = self._candle_cache.get(epic)
         if candle_data and (time.time() - candle_data["timestamp"]) < self._candle_cache_ttl:
             candles = candle_data["candles"]
@@ -636,6 +713,14 @@ class PositionWatchdog:
             return False
 
         if len(adverse_candles) == 3 and -3.0 < pl_pct <= -1.0:
+            # Structure override: skip 3-candle exit if trade is with the trend
+            if structure_aligned:
+                logger.info(
+                    f"WATCHDOG: Skipping early exit for {epic} — structure-aligned {direction}, "
+                    f"3 adverse candles but trend supports holding (P/L: {pl_pct:+.1f}%)"
+                )
+                return False
+
             partial_size = round(size * 0.5, 4)
             if partial_size > 0 and deal_id not in self._partial_taken:
                 try:
@@ -656,6 +741,14 @@ class PositionWatchdog:
                     logger.error(f"Watchdog: Early exit partial failed for {epic}: {e}")
 
         elif len(adverse_candles) >= 4:
+            # Structure override: if trade is with the trend, only close on severe loss (> -5%)
+            if structure_aligned and pl_pct > -5.0:
+                logger.info(
+                    f"WATCHDOG: Holding {epic} despite {len(adverse_candles)} adverse candles — "
+                    f"structure-aligned {direction}, P/L {pl_pct:+.1f}% not critical yet (threshold: -5%)"
+                )
+                return False
+
             try:
                 self.client.close_position(deal_id, direction=direction, size=size)
                 self._set_cooldown(epic)
@@ -869,7 +962,8 @@ class PositionWatchdog:
 
             sl_str = f"SL:{sl:.4f}" if sl else "NO SL!"
             be_str = " [BE]" if pos["position"]["dealId"] in self._breakeven_set else ""
-            summaries.append(f"{epic}:{pl_pct:+.1f}%{be_str} {sl_str}")
+            struct_str = " [SA]" if self._is_structure_aligned(direction, epic) else ""
+            summaries.append(f"{epic}:{pl_pct:+.1f}%{be_str}{struct_str} {sl_str}")
 
             if not sl:
                 logger.warning(f"WATCHDOG ALERT: {epic} has NO STOP LOSS! deal={pos['position']['dealId']}")
@@ -926,5 +1020,13 @@ class PositionWatchdog:
             remaining = 1800 - (datetime.now() - cooldown_time).total_seconds()
             if remaining > 0:
                 info["cycle_cooldowns"][epic] = f"{remaining/60:.0f}min remaining"
+
+        # Market structure cache
+        info["market_structure"] = {}
+        for epic, cached in self._structure_cache.items():
+            s = cached.get("structure")
+            if s:
+                age = int(time.time() - cached["timestamp"])
+                info["market_structure"][epic] = f"{s['structure']} (bias={s['bias']}, {age}s ago)"
 
         return info
