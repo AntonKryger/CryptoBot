@@ -6,11 +6,12 @@ Automatiseret crypto CFD trading-system paa Capital.com med tre bots:
 - **Live Bot** (regelbaseret, rigtige penge): Teknisk analyse med scoring-system + trend-filter
 - **AI Bot** (AI-drevet, demo): Claude Haiku analyserer markedsdata, modtager regel-bottens signal som kontekst
 - **Demo Bot** (regelbaseret, demo): Identisk med Live Bot, til A/B test
+- **AI Coach** (analyse-service): Laeser alle bots' data, koerer Sonnet/Opus, giver specifikke optimeringsanbefalinger via Telegram
 
 ## Status
 **Aktiv** — koerer 24/7 paa Hetzner VPS (91.98.26.70) via Docker.
 
-**Sidst opdateret:** 12-03-2026
+**Sidst opdateret:** 13-03-2026
 
 **Coins (6 stk):** BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD
 
@@ -98,14 +99,22 @@ Circuit breaker state overlever restart (SQLite). Telegram notifikationer max 1 
 ```
                 Capital.com API
                 /          |          \
-           Live Bot     AI Bot      Demo Bot
+           Live Bot     AI Bot      Demo Bot(s)
           (main.py)  (main_ai.py)  (main.py)
               |          |              |
-        config.yaml  config_ai.yaml  config_demo.yaml
+        config.yaml  config_ai.yaml  config_*.yaml
               |          |              |
         Live-konto   Demo-konto 2   Demo-konto 1
               |          |              |
         Telegram 1   Telegram 2    Telegram 1
+
+                    AI Coach
+                 (main_coach.py)
+                       |
+           Laeser ALLE bots' DBs (read-only)
+           Sonnet/Opus analyse 1-2x dagligt
+                       |
+                  Telegram 3
 ```
 
 ### A/B Test Setup
@@ -126,10 +135,11 @@ Circuit breaker state overlever restart (SQLite). Telegram notifikationer max 1 
 CryptoBot/
 ├── main.py                          # Live Bot: Regelbaseret trading bot
 ├── main_ai.py                       # AI Bot: AI-drevet med cycle trading + scale-in
+├── main_coach.py                    # AI Coach: Analyserer alle bots, giver anbefalinger
 ├── dashboard.py                     # Dashboard entry point (Flask, port 5000)
 ├── config.example.yaml              # Eksempel-konfiguration
 ├── Dockerfile                       # Python 3.12 Docker image
-├── docker-compose.yml               # Alle services (bots + dashboard)
+├── docker-compose.yml               # Alle services (bots + dashboard + coach)
 ├── requirements.txt                 # Python dependencies
 ├── scripts/
 │   ├── import_capital_csv.py        # Import enkelt Capital.com CSV
@@ -150,6 +160,12 @@ CryptoBot/
 │   ├── executor/
 │   │   ├── trade_executor.py        # Handelsudfoersel, SQLite, reconcile
 │   │   └── position_watchdog.py     # 9-regel positionsovervagning (12 sek.)
+│   ├── coach/
+│   │   ├── data_collector.py        # Read-only DB adgang, JSON parsing, DataFrames
+│   │   ├── analyzer.py              # Ren statistik (pandas, ingen LLM)
+│   │   ├── llm_advisor.py           # Anthropic API → specifikke anbefalinger
+│   │   ├── coach_db.py              # Coach's egen SQLite (rapporter + anbefalinger)
+│   │   └── formatters.py            # Telegram HTML formattering
 │   ├── dashboard/
 │   │   ├── app.py                   # Flask app factory (3 DB paths)
 │   │   ├── routes.py                # HTML pages + JSON API
@@ -160,9 +176,12 @@ CryptoBot/
 │   │   └── telegram_bot.py          # Telegram notifikationer og kommandoer
 │   └── analysis/
 │       └── reporter.py              # Data-analyse og rapportering
-├── data/                            # Live Bot SQLite DB
-├── data_ai/                         # AI Bot SQLite DB
-└── data_demo/                       # Demo Bot SQLite DB
+├── data_rl1/                        # Live Bot (RL1) SQLite DB
+├── data_rd1/                        # Demo Bot (RD1) SQLite DB
+├── data_ad1/                        # AI Bot (AD1) SQLite DB
+├── data_sd1/                        # Scalper Demo 1 (SD1) SQLite DB
+├── data_sd2/                        # Scalper Demo 2 (SD2) SQLite DB
+└── data_coach/                      # Coach SQLite DB (anbefalinger + rapporter)
 ```
 
 ---
@@ -258,6 +277,14 @@ Flask + Jinja2 + Chart.js dark theme dashboard paa port 5000.
 
 **Kun Bot AI:** `/report EPIC` `/debug`
 
+**AI Coach (separat Telegram bot):**
+- `/coach_status` — Vis coach status og tilsluttede bots
+- `/coach_analyze` — Koer fuld analyse nu (on-demand)
+- `/coach_recs` — Vis alle ventende anbefalinger
+- `/coach_approve {id}` — Godkend en anbefaling
+- `/coach_reject {id}` — Afvis en anbefaling
+- `/coach_bot {id}` — Detaljeret rapport for en specifik bot
+
 ---
 
 ## Konfiguration
@@ -295,9 +322,12 @@ docker compose logs --tail=30 cryptobot-ai
 ```
 
 ### Docker Compose Services
-- `cryptobot`: Live Bot (config.yaml, data/, logs/)
-- `cryptobot-ai`: AI Bot (config_ai.yaml, data_ai/, logs_ai/)
-- `cryptobot-demo`: Demo Bot (config_demo.yaml, data_demo/, logs_demo/)
+- `cryptobot-rl1`: Live Bot (config_rl1.yaml, data_rl1/, logs_rl1/)
+- `cryptobot-ad1`: AI Bot (config_ad1.yaml, data_ad1/, logs_ad1/)
+- `cryptobot-rd1`: Demo Bot (config_rd1.yaml, data_rd1/, logs_rd1/)
+- `cryptobot-sd1`: Scalper Demo 1 (config_sd1.yaml, data_sd1/, logs_sd1/)
+- `cryptobot-sd2`: Scalper Demo 2 (config_sd2.yaml, data_sd2/, logs_sd2/)
+- `cryptobot-coach`: AI Coach (config_coach.yaml, data_coach/, logs_coach/)
 - `cryptobot-dashboard`: Flask dashboard (port 5000)
 
 ---
@@ -310,10 +340,129 @@ docker compose logs --tail=30 cryptobot-ai
 
 ---
 
+## AI Coach (`main_coach.py`)
+
+Separat Docker-service der laeser ALLE bots' trade-data i read-only mode og giver specifikke, datadrevne optimeringsanbefalinger via Telegram. Ingen Capital.com forbindelse, ingen trading.
+
+### Formaal
+Bots har brug for systematisk laering. Coach analyserer al historisk data og giver actionable anbefalinger per bot — config-aendringer med specifikke noegler og vaerdier, coin bans, strategy changes.
+
+### Hvordan det virker
+
+1. **DataCollector** laeser alle bots' SQLite DBs (read-only Docker volumes)
+2. **Analyzer** koerer ren pandas-statistik: win rate by regime/coin/hour/direction/exit_reason, R:R analyse, indicator buckets, hold duration, drawdown, AI confidence vs outcome, scalper zone analyse
+3. **LLMAdvisor** sender statistik til Sonnet/Opus og faar specifikke anbefalinger (JSON format)
+4. **CoachDB** gemmer rapporter og anbefalinger i egen SQLite med feedback-loop (outcome tracking)
+5. **Telegram** sender rapport og lader bruger godkende/afvise anbefalinger
+
+### Scheduling
+- **Daglig rapport**: 23:30 CET — opsummering af dagens/ugens performance
+- **Ugentlig deep analysis**: Soendag 09:00 CET — fuld analyse med anbefalinger
+- **On-demand**: `/coach_analyze` i Telegram
+
+### Analyser per bot
+
+| Analyse | Beskrivelse |
+|---------|-------------|
+| Win rate by regime | TRENDING_UP/DOWN, RANGING, NEUTRAL |
+| Win rate by coin | Per BTCUSD, ETHUSD, etc. |
+| Win rate by hour (CET) | Hvilke timer performer bedst |
+| Win rate by direction | BUY vs SELL |
+| Win rate by exit reason | SL hit, TP hit, watchdog, etc. |
+| Risk/reward analyse | Planned vs actual R:R, TP/SL hit rates |
+| Indicator buckets | RSI, ADX, range_position vs win rate |
+| Hold duration | Optimal holdtid, korrelation med outcome |
+| Drawdown | Max drawdown, tabs-straekker |
+| AI confidence vs outcome | Confidence bucket win rates (kun AI bot) |
+| Scalper zone analyse | Entry zone vs outcome (kun scalper) |
+| Cross-bot sammenligning | Side-by-side per coin og regime |
+
+### LLM Output Format
+Coach faar specifikke anbefalinger fra Sonnet/Opus:
+```json
+{
+  "status": "HEALTHY|WARNING|CRITICAL",
+  "top_finding": "Vigtigste observation",
+  "recommendations": [{
+    "type": "config_change|strategy_change|pause|coin_ban",
+    "priority": "high|medium|low",
+    "description": "Specifik anbefaling paa dansk",
+    "config_key": "risk.stop_loss_pct",
+    "current_value": "4.0",
+    "recommended_value": "6.0",
+    "evidence": "SL hit rate 68%, avg reversal efter SL: +2.1%",
+    "expected_impact": "Faerre false stops, est. +15% win rate"
+  }]
+}
+```
+
+### Feedback-loop
+`recommendation_outcomes` tabellen lukker loopen: naar en anbefaling er godkendt og implementeret, maaler coach automatisk effekten (win rate foer/efter, P/L impact) og giver en verdict.
+
+### Database (coach.db)
+
+| Tabel | Beskrivelse |
+|-------|-------------|
+| `analysis_reports` | Tidsstempel, trigger, raa statistik (JSON), LLM response (JSON), model, token count |
+| `recommendations` | Per bot: type, prioritet, beskrivelse, config_key, vaerdier, evidens, status (pending/approved/rejected) |
+| `recommendation_outcomes` | Feedback-loop: trades foer/efter, win rate foer/efter, P/L impact, verdict |
+
+### Setup: Opret Telegram Bot til Coach
+
+Coach SKAL have sin EGEN Telegram bot — undgaar polling-konflikt med de 5 trading bots.
+
+**Trin 1: Opret bot via BotFather**
+1. Aaben Telegram og soeg efter `@BotFather`
+2. Send `/newbot`
+3. Vaelg navn: f.eks. `CryptoBot Coach`
+4. Vaelg username: f.eks. `cryptobot_coach_bot` (skal slutte paa `bot`)
+5. Kopiér det bot token BotFather giver dig
+
+**Trin 2: Opret `config_coach.yaml` paa VPS**
+```yaml
+coach:
+  bot_data_dir: /app/bot_data
+  analysis_days: 30
+  ai:
+    anthropic_api_key: "sk-ant-..."    # Din Anthropic API noegle
+    model: "claude-sonnet-4-20250514"  # Eller claude-opus-4-6
+    max_tokens: 2000
+
+database:
+  path: "data/coach.db"
+
+telegram:
+  enabled: true
+  bot_token: "<token fra BotFather>"   # IKKE samme som trading bots
+  chat_id: "<dit chat id>"            # Samme chat_id som andre bots
+```
+
+**Trin 3: Deploy**
+```bash
+ssh -i ~/.ssh/id_ed25519 root@91.98.26.70
+cd /root/cryptobot && git pull origin master
+# Opret config_coach.yaml med ovenstaaende indhold
+docker compose up -d --build coach
+docker compose logs --tail=30 coach
+```
+
+**Trin 4: Verificér**
+- Send `/coach_status` i Telegram → skal vise alle tilsluttede bots
+- Send `/coach_analyze` → skal returnere rapport med stats per bot
+- Tjek at coach IKKE kan skrive til bot-DBs: `docker exec cryptobot-coach touch /app/bot_data/rl1/test` → read-only error
+
+### Estimeret API-kost
+- Daglig rapport: ~2K input + 1K output tokens = ~$0.02
+- Ugentlig deep: ~5K input + 2K output = ~$0.05
+- Maanedlig total: <$1
+
+---
+
 ## Tech Stack
 - **Python 3.12** + pandas
 - **Capital.com REST API** (live + demo)
-- **Claude Haiku 4.5** (Anthropic SDK) for AI-analyse
+- **Claude Haiku 4.5** (Anthropic SDK) for AI-analyse i trading bots
+- **Claude Sonnet/Opus** (Anthropic SDK) for AI Coach analyse
 - **SQLite** for handelslog
 - **Flask** + Jinja2 + Chart.js for dashboard
 - **Telegram Bot API** for notifikationer
@@ -322,6 +471,33 @@ docker compose logs --tail=30 cryptobot-ai
 ---
 
 ## Changelog
+
+### 13-03-2026: AI Coach — automatisk analyse og optimering af alle bots
+
+**Ny service:** `cryptobot-coach` — separat Docker container der laeser alle bots' trade-data (read-only) og giver specifikke optimeringsanbefalinger via Telegram.
+
+**Nye filer:**
+
+| Fil | Beskrivelse |
+|-----|-------------|
+| `main_coach.py` | Entry point: scheduling (daglig 23:30, ugentlig soen 09:00 CET) + Telegram commands |
+| `src/coach/data_collector.py` | Read-only DB adgang med JSON parsing og DataFrame output |
+| `src/coach/analyzer.py` | 11 analyse-funktioner (regime, coin, hour, direction, exit_reason, R:R, indicators, hold duration, drawdown) + type-specifikke (AI confidence, scalper zones) + cross-bot |
+| `src/coach/llm_advisor.py` | Sonnet/Opus API kald med struktureret system prompt, dansk output |
+| `src/coach/coach_db.py` | 3 tabeller: analysis_reports, recommendations, recommendation_outcomes (feedback-loop) |
+| `src/coach/formatters.py` | Telegram HTML formattering af rapporter og anbefalinger |
+
+**Aendrede filer:**
+
+| Fil | Aendring |
+|-----|---------|
+| `Dockerfile` | Tilfojet `COPY main_coach.py .` |
+| `docker-compose.yml` | Tilfojet `coach` service med read-only bot data mounts |
+| `README.md` | Fuld dokumentation af coach, setup-guide, Telegram bot oprettelse |
+
+**Telegram kommandoer:** `/coach_status`, `/coach_analyze`, `/coach_recs`, `/coach_approve {id}`, `/coach_reject {id}`, `/coach_bot {id}`
+
+**Krav:** Opret ny Telegram bot via BotFather (undgaar polling-konflikt med trading bots). Se [AI Coach setup](#setup-opret-telegram-bot-til-coach).
 
 ### 12-03-2026 (v2): Ubrydelige Python hard gates — fix EUR 576 BTC tab
 

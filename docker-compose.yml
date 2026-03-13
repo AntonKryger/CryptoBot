@@ -48,6 +48,20 @@ services:
       - ./data_sd2:/app/data
       - ./logs_sd2:/app/logs
 
+  coach:
+    <<: *bot-common
+    container_name: cryptobot-coach
+    command: ["python", "-u", "main_coach.py", "--config", "config.yaml"]
+    volumes:
+      - ./config_coach.yaml:/app/config.yaml:ro
+      - ./data_coach:/app/data
+      - ./logs_coach:/app/logs
+      - ./data_rl1:/app/bot_data/rl1:ro
+      - ./data_rd1:/app/bot_data/rd1:ro
+      - ./data_ad1:/app/bot_data/ad1:ro
+      - ./data_sd1:/app/bot_data/sd1:ro
+      - ./data_sd2:/app/bot_data/sd2:ro
+
   dashboard:
     <<: *bot-common
     container_name: cryptobot-dashboard
