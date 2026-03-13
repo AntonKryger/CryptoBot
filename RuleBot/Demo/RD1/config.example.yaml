@@ -1,0 +1,64 @@
+bot:
+  id: "RD1"
+  name: "Rule Bot Demo 01"
+  type: "rule"
+
+capital:
+  email: "your-email@example.com"
+  password: "your-password"
+  api_key: "your-api-key"
+  demo: true
+  account_name: "RD1"
+
+trading:
+  coins: ["BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD", "LTCUSD"]
+  leverage: 2
+  timeframe: "HOUR"
+  scan_interval: 300
+  friday_cutoff_hour: 20
+
+risk:
+  stop_loss: 4.0
+  take_profit: 7.0
+  trailing_stop_trigger: 3.0
+  max_open_positions: 6
+  daily_loss_limit: 5.0
+  total_loss_limit: 30.0
+  atr_sl_multiplier: 2.0
+  atr_sl_min_pct: 3.0
+  atr_sl_max_pct: 8.0
+  max_hold_hours: {major: 24, altcoin: 8, memecoin: 4}
+  allocation: {max_total_exposure: 95, max_memecoin: 5, max_major: 40, max_altcoin: 30, min_position: 5}
+
+watchdog:
+  check_interval: 12
+  breakeven_trigger_pct: 1.5
+  progressive_sl_trigger_pct: 2.0
+  progressive_sl_trail_pct: 1.0
+  pullback_peak_trigger_pct: 1.5
+  pullback_close_pct: 0.75
+  trailing_trigger_pct: 2.5
+  trailing_atr_mult: 1.5
+  partial_profit_pct: 4.0
+  partial_close_ratio: 0.5
+
+signals:
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  volume_multiplier: 1.5
+  atr_period: 14
+  range_period: 24
+  buy_zone_pct: 20
+  sell_zone_pct: 80
+  min_range_pct: 3.0
+
+telegram:
+  enabled: false
+  bot_token: "your-telegram-bot-token"
+  chat_id: "your-chat-id"
+
+database:
+  path: "data/trades.db"

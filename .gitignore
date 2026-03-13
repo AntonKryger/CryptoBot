@@ -1,13 +1,14 @@
-# Config with secrets (all per-bot configs)
-config.yaml
-config_ai.yaml
-config_rl1.yaml
-config_rd1.yaml
-config_ad1.yaml
-config_sd1.yaml
-config_sd2.yaml
-config_coach.yaml
-config_demo.yaml
+# Config with secrets — each bot has its own config.yaml
+**/config.yaml
+config_*.yaml
+
+# Bot data and logs (inside each bot's directory)
+**/data/
+**/logs/
+
+# Legacy flat data/log dirs
+data*/
+logs*/
 
 # Python
 __pycache__/
@@ -25,10 +26,6 @@ build/
 # IDE
 .vscode/
 .idea/
-
-# Logs and data (all per-bot dirs)
-logs*/
-data*/
 
 # OS
 .DS_Store

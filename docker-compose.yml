@@ -1,81 +1,85 @@
-x-bot-common: &bot-common
-  build: .
-  restart: always
-
 services:
   rl1:
-    <<: *bot-common
+    build:
+      context: ./RuleBot/Live/RL1
     container_name: cryptobot-rl1
-    command: ["python", "-u", "main.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_rl1.yaml:/app/config.yaml:ro
-      - ./data_rl1:/app/data
-      - ./logs_rl1:/app/logs
+      - ./RuleBot/Live/RL1/config.yaml:/app/config.yaml:ro
+      - ./RuleBot/Live/RL1/data:/app/data
+      - ./RuleBot/Live/RL1/logs:/app/logs
 
   rd1:
-    <<: *bot-common
+    build:
+      context: ./RuleBot/Demo/RD1
     container_name: cryptobot-rd1
-    command: ["python", "-u", "main.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_rd1.yaml:/app/config.yaml:ro
-      - ./data_rd1:/app/data
-      - ./logs_rd1:/app/logs
+      - ./RuleBot/Demo/RD1/config.yaml:/app/config.yaml:ro
+      - ./RuleBot/Demo/RD1/data:/app/data
+      - ./RuleBot/Demo/RD1/logs:/app/logs
 
   ad1:
-    <<: *bot-common
+    build:
+      context: ./AIBot/Demo/AD1
     container_name: cryptobot-ad1
-    command: ["python", "-u", "main_ai.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_ad1.yaml:/app/config.yaml:ro
-      - ./data_ad1:/app/data
-      - ./logs_ad1:/app/logs
+      - ./AIBot/Demo/AD1/config.yaml:/app/config.yaml:ro
+      - ./AIBot/Demo/AD1/data:/app/data
+      - ./AIBot/Demo/AD1/logs:/app/logs
 
   sd1:
-    <<: *bot-common
+    build:
+      context: ./ScalpingBot/Demo/SD1
     container_name: cryptobot-sd1
-    command: ["python", "-u", "main.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_sd1.yaml:/app/config.yaml:ro
-      - ./data_sd1:/app/data
-      - ./logs_sd1:/app/logs
+      - ./ScalpingBot/Demo/SD1/config.yaml:/app/config.yaml:ro
+      - ./ScalpingBot/Demo/SD1/data:/app/data
+      - ./ScalpingBot/Demo/SD1/logs:/app/logs
 
   sd2:
-    <<: *bot-common
+    build:
+      context: ./ScalpingBot/Demo/SD2
     container_name: cryptobot-sd2
-    command: ["python", "-u", "main.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_sd2.yaml:/app/config.yaml:ro
-      - ./data_sd2:/app/data
-      - ./logs_sd2:/app/logs
+      - ./ScalpingBot/Demo/SD2/config.yaml:/app/config.yaml:ro
+      - ./ScalpingBot/Demo/SD2/data:/app/data
+      - ./ScalpingBot/Demo/SD2/logs:/app/logs
 
   coach:
-    <<: *bot-common
+    build:
+      context: ./AICoach/AC1
     container_name: cryptobot-coach
-    command: ["python", "-u", "main_coach.py", "--config", "config.yaml"]
+    restart: always
     volumes:
-      - ./config_coach.yaml:/app/config.yaml:ro
-      - ./data_coach:/app/data
-      - ./logs_coach:/app/logs
-      - ./data_rl1:/app/bot_data/rl1:ro
-      - ./data_rd1:/app/bot_data/rd1:ro
-      - ./data_ad1:/app/bot_data/ad1:ro
-      - ./data_sd1:/app/bot_data/sd1:ro
-      - ./data_sd2:/app/bot_data/sd2:ro
+      - ./AICoach/AC1/config.yaml:/app/config.yaml:ro
+      - ./AICoach/AC1/data:/app/data
+      - ./AICoach/AC1/logs:/app/logs
+      - ./RuleBot/Live/RL1/data:/app/bot_data/rl1:ro
+      - ./RuleBot/Demo/RD1/data:/app/bot_data/rd1:ro
+      - ./AIBot/Demo/AD1/data:/app/bot_data/ad1:ro
+      - ./ScalpingBot/Demo/SD1/data:/app/bot_data/sd1:ro
+      - ./ScalpingBot/Demo/SD2/data:/app/bot_data/sd2:ro
 
   dashboard:
-    <<: *bot-common
+    build:
+      context: ./RuleBot/Live/RL1
     container_name: cryptobot-dashboard
+    restart: always
     command: ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "30", "dashboard:app"]
     ports:
       - "0.0.0.0:5000:5000"
     environment:
       - BOT_DATA_DIR=/app/bot_data
-      - CAPITAL_EMAIL=anton.nellemann@gmail.com
-      - CAPITAL_PASSWORD=Ypk26pdn!claudebot
-      - CAPITAL_API_KEY=C7VkG2cJuPoiqW2B
+      - CAPITAL_EMAIL=${CAPITAL_EMAIL}
+      - CAPITAL_PASSWORD=${CAPITAL_PASSWORD}
+      - CAPITAL_API_KEY=${CAPITAL_API_KEY}
     volumes:
-      - ./data_rl1:/app/bot_data/rl1:ro
-      - ./data_rd1:/app/bot_data/rd1:ro
-      - ./data_ad1:/app/bot_data/ad1:ro
-      - ./data_sd1:/app/bot_data/sd1:ro
-      - ./data_sd2:/app/bot_data/sd2:ro
+      - ./RuleBot/Live/RL1/data:/app/bot_data/rl1:ro
+      - ./RuleBot/Demo/RD1/data:/app/bot_data/rd1:ro
+      - ./AIBot/Demo/AD1/data:/app/bot_data/ad1:ro
+      - ./ScalpingBot/Demo/SD1/data:/app/bot_data/sd1:ro
+      - ./ScalpingBot/Demo/SD2/data:/app/bot_data/sd2:ro

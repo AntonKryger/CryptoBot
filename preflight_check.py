@@ -12,14 +12,16 @@ import sys
 from collections import defaultdict
 
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_CONFIGS = [
-    "config_rl1.yaml",
-    "config_rd1.yaml",
-    "config_ad1.yaml",
-    "config_sd1.yaml",
-    "config_sd2.yaml",
-    "config_coach.yaml",
-]
+
+# Each bot's config.yaml path relative to project root
+BOT_CONFIGS = {
+    "RL1": "RuleBot/Live/RL1/config.yaml",
+    "RD1": "RuleBot/Demo/RD1/config.yaml",
+    "AD1": "AIBot/Demo/AD1/config.yaml",
+    "SD1": "ScalpingBot/Demo/SD1/config.yaml",
+    "SD2": "ScalpingBot/Demo/SD2/config.yaml",
+    "AC1": "AICoach/AC1/config.yaml",
+}
 
 
 def load_yaml(path):
@@ -35,12 +37,12 @@ def main():
     configs = {}
     missing = []
 
-    for filename in BOT_CONFIGS:
-        path = os.path.join(CONFIG_DIR, filename)
+    for bot_id, rel_path in BOT_CONFIGS.items():
+        path = os.path.join(CONFIG_DIR, rel_path)
         if not os.path.exists(path):
-            missing.append(filename)
+            missing.append(f"{bot_id} ({rel_path})")
             continue
-        configs[filename] = load_yaml(path)
+        configs[bot_id] = load_yaml(path)
 
     if missing:
         print(f"\n⚠️  Missing config files: {', '.join(missing)}")
@@ -55,12 +57,11 @@ def main():
 
     credential_map = defaultdict(list)  # "email:api_key" -> [bot_ids]
 
-    for filename, cfg in sorted(configs.items()):
+    for bot_id, cfg in sorted(configs.items()):
         bot_cfg = cfg.get("bot", {})
         cap_cfg = cfg.get("capital", {})
         tg_cfg = cfg.get("telegram", {})
 
-        bot_id = bot_cfg.get("id", "?")
         bot_type = bot_cfg.get("type", "?")
         email = cap_cfg.get("email", "NOT SET")
         api_key = cap_cfg.get("api_key", "")
@@ -80,11 +81,9 @@ def main():
     for cred_key, bot_ids in credential_map.items():
         if len(bot_ids) > 1:
             email = cred_key.split(":")[0]
-            # Check if they use different sub-accounts
             sub_accounts = set()
-            for filename, cfg in configs.items():
-                bid = cfg.get("bot", {}).get("id", "?")
-                if bid in bot_ids:
+            for bot_id, cfg in configs.items():
+                if bot_id in bot_ids:
                     sub_accounts.add(cfg.get("capital", {}).get("account_name", "default"))
 
             if len(sub_accounts) <= 1:
