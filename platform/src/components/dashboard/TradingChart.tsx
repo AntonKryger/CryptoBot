@@ -59,60 +59,31 @@ function getThemeColors(): ChartColors {
   };
 }
 
-// Generate realistic mock candle data
-function generateMockCandles(epic: string, timeframe: string): CandlestickData<Time>[] {
-  const now = Math.floor(Date.now() / 1000);
-  const intervals: Record<string, number> = {
-    MINUTE_15: 15 * 60,
-    HOUR: 60 * 60,
-    HOUR_4: 4 * 60 * 60,
-    DAY: 24 * 60 * 60,
-  };
-  const interval = intervals[timeframe] || 3600;
-  const count = 200;
+interface ApiCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
-  // Base prices per coin
-  const bases: Record<string, number> = {
-    BTCUSD: 84000,
-    ETHUSD: 2120,
-    SOLUSD: 128,
-    AVAXUSD: 22,
-    LINKUSD: 14.5,
-    LTCUSD: 93,
-  };
-  const base = bases[epic] || 100;
-  const volatility = base * 0.008; // 0.8% volatility per candle
-
-  const candles: CandlestickData<Time>[] = [];
-  let price = base * (0.95 + Math.random() * 0.1); // Start -5% to +5%
-
-  for (let i = 0; i < count; i++) {
-    const time = (now - (count - i) * interval) as Time;
-    const change = (Math.random() - 0.48) * volatility; // slight upward bias
-    const open = price;
-    const close = open + change;
-    const high = Math.max(open, close) + Math.random() * volatility * 0.5;
-    const low = Math.min(open, close) - Math.random() * volatility * 0.5;
-
-    candles.push({
-      time,
-      open: parseFloat(open.toFixed(2)),
-      high: parseFloat(high.toFixed(2)),
-      low: parseFloat(low.toFixed(2)),
-      close: parseFloat(close.toFixed(2)),
-    });
-    price = close;
+async function fetchCandles(epic: string, resolution: string): Promise<ApiCandle[]> {
+  const resp = await fetch(`/api/prices?epic=${epic}&resolution=${resolution}&max=200`);
+  if (!resp.ok) {
+    throw new Error(`API error: ${resp.status}`);
   }
-
-  return candles;
+  const data = await resp.json();
+  return data.candles || [];
 }
 
 interface TradingChartProps {
   className?: string;
   onPriceUpdate?: (price: number, change: number) => void;
+  onCoinChange?: (epic: string) => void;
 }
 
-export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
+export function TradingChart({ className, onPriceUpdate, onCoinChange }: TradingChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -122,33 +93,60 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
   const [selectedTimeframe, setSelectedTimeframe] = useState("HOUR");
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
   const [priceChange, setPriceChange] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const updateChart = useCallback(
-    (epic: string, timeframe: string) => {
+  const loadData = useCallback(
+    async (epic: string, timeframe: string) => {
       if (!seriesRef.current || !volumeSeriesRef.current) return;
 
-      const candles = generateMockCandles(epic, timeframe);
-      seriesRef.current.setData(candles);
+      setLoading(true);
+      setError(null);
 
-      // Generate volume data
-      const volumeData = candles.map((c) => ({
-        time: c.time,
-        value: Math.floor(Math.random() * 1000 + 200),
-        color:
-          c.close >= c.open
-            ? "rgba(34, 197, 94, 0.3)"
-            : "rgba(239, 68, 68, 0.3)",
-      }));
-      volumeSeriesRef.current.setData(volumeData);
+      try {
+        const apiCandles = await fetchCandles(epic, timeframe);
 
-      // Update price info
-      const last = candles[candles.length - 1];
-      const first = candles[0];
-      if (last && first) {
-        const change = ((last.close - first.open) / first.open) * 100;
-        setCurrentPrice(last.close);
-        setPriceChange(change);
-        onPriceUpdate?.(last.close, change);
+        if (!apiCandles.length) {
+          setError("Ingen data modtaget fra Capital.com");
+          return;
+        }
+
+        // Convert to lightweight-charts format
+        const candles: CandlestickData<Time>[] = apiCandles.map((c) => ({
+          time: c.time as Time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }));
+
+        seriesRef.current.setData(candles);
+
+        // Volume data
+        const volumeData = apiCandles.map((c) => ({
+          time: c.time as Time,
+          value: c.volume,
+          color:
+            c.close >= c.open
+              ? "rgba(34, 197, 94, 0.3)"
+              : "rgba(239, 68, 68, 0.3)",
+        }));
+        volumeSeriesRef.current.setData(volumeData);
+
+        // Update price info
+        const last = apiCandles[apiCandles.length - 1];
+        const first = apiCandles[0];
+        if (last && first) {
+          const change = ((last.close - first.open) / first.open) * 100;
+          setCurrentPrice(last.close);
+          setPriceChange(change);
+          onPriceUpdate?.(last.close, change);
+        }
+      } catch (err) {
+        console.error("Chart data error:", err);
+        setError(err instanceof Error ? err.message : "Kunne ikke hente data");
+      } finally {
+        setLoading(false);
       }
     },
     [onPriceUpdate]
@@ -255,12 +253,23 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
     };
   }, []);
 
-  // Update data when coin/timeframe changes
+  // Load data when coin/timeframe changes
   useEffect(() => {
-    updateChart(selectedCoin, selectedTimeframe);
-  }, [selectedCoin, selectedTimeframe, updateChart]);
+    loadData(selectedCoin, selectedTimeframe);
+  }, [selectedCoin, selectedTimeframe, loadData]);
 
-  const coinLabel = COINS.find((c) => c.epic === selectedCoin)?.label || selectedCoin;
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadData(selectedCoin, selectedTimeframe);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [selectedCoin, selectedTimeframe, loadData]);
+
+  const handleCoinChange = (epic: string) => {
+    setSelectedCoin(epic);
+    onCoinChange?.(epic);
+  };
 
   return (
     <div
@@ -277,7 +286,7 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
             {COINS.map((coin) => (
               <button
                 key={coin.epic}
-                onClick={() => setSelectedCoin(coin.epic)}
+                onClick={() => handleCoinChange(coin.epic)}
                 className={cn(
                   "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                   selectedCoin === coin.epic
@@ -295,7 +304,10 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
             <div className="flex items-center gap-2 ml-3 pl-3 border-l border-border">
               <span className="text-lg font-mono font-semibold text-text-primary">
                 {currentPrice >= 1000
-                  ? currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })
+                  ? currentPrice.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })
                   : currentPrice.toFixed(4)}
               </span>
               <span
@@ -307,6 +319,13 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
                 {priceChange >= 0 ? "+" : ""}
                 {priceChange.toFixed(2)}%
               </span>
+            </div>
+          )}
+
+          {/* Loading indicator */}
+          {loading && (
+            <div className="ml-2">
+              <div className="h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin" />
             </div>
           )}
         </div>
@@ -330,8 +349,21 @@ export function TradingChart({ className, onPriceUpdate }: TradingChartProps) {
         </div>
       </div>
 
+      {/* Error banner */}
+      {error && (
+        <div className="px-4 py-2 bg-danger/10 text-danger text-xs">
+          {error}
+        </div>
+      )}
+
       {/* Chart */}
       <div ref={chartContainerRef} className="flex-1 min-h-[400px]" />
+
+      {/* Footer: data source */}
+      <div className="px-4 py-1.5 border-t border-border text-[10px] text-text-muted flex justify-between">
+        <span>Data: Capital.com (demo) — 30s auto-refresh</span>
+        <span>Powered by TradingView Lightweight Charts</span>
+      </div>
     </div>
   );
 }
