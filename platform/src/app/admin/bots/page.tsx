@@ -303,9 +303,9 @@ export default function BotsPage() {
               <TableHead>Bot Name</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Coins</TableHead>
-              <TableHead>Risk %</TableHead>
+              <TableHead className="text-right">Risk %</TableHead>
               <TableHead>Last Heartbeat</TableHead>
-              <TableHead>Uptime</TableHead>
+              <TableHead className="text-right">Uptime</TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -335,8 +335,8 @@ export default function BotsPage() {
                     ))}
                   </div>
                 </TableCell>
-                <TableCell>
-                  <span className="text-sm text-text-primary">
+                <TableCell className="text-right">
+                  <span className="text-sm font-mono text-text-primary">
                     {bot.risk_percent}%
                   </span>
                 </TableCell>
@@ -345,8 +345,8 @@ export default function BotsPage() {
                     {heartbeatLabel(bot.last_heartbeat)}
                   </span>
                 </TableCell>
-                <TableCell>
-                  <span className="text-sm text-text-primary">
+                <TableCell className="text-right">
+                  <span className="text-sm font-mono text-text-primary">
                     {bot.uptime_percent != null
                       ? `${bot.uptime_percent}%`
                       : "-"}
@@ -366,12 +366,12 @@ export default function BotsPage() {
             ))}
             {filteredBots.length === 0 && (
               <TableRow>
-                <td
+                <TableCell
                   colSpan={8}
                   className="text-center py-8 text-text-muted text-sm"
                 >
                   No bots found
-                </td>
+                </TableCell>
               </TableRow>
             )}
           </TableBody>

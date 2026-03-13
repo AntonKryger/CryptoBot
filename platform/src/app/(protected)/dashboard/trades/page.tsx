@@ -104,7 +104,7 @@ export default function TradesPage() {
             </span>
           )}
         </Button>
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" disabled title="Coming soon">
           <Download className="h-4 w-4 mr-2" />
           Export CSV
         </Button>

@@ -304,7 +304,7 @@ export function TradingChart({ className, onPriceUpdate, onCoinChange }: Trading
             <div className="flex items-center gap-2 ml-3 pl-3 border-l border-border">
               <span className="text-lg font-mono font-semibold text-text-primary">
                 {currentPrice >= 1000
-                  ? currentPrice.toLocaleString("en-US", {
+                  ? currentPrice.toLocaleString("da-DK", {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
                     })

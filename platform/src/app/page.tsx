@@ -161,7 +161,7 @@ export default function LandingPage() {
         <div className="absolute bottom-1/3 right-1/3 w-[400px] h-[400px] bg-fuchsia-500/[0.06] blur-[120px] rounded-full" />
 
         <div className="relative text-center">
-          <h1 className="text-7xl md:text-[9rem] font-bold tracking-tighter leading-[0.85]">
+          <h1 className="text-4xl sm:text-6xl lg:text-7xl xl:text-[9rem] font-bold tracking-tighter leading-[0.85]">
             {t.hero.line1}
             <br />
             {t.hero.line2}
@@ -617,7 +617,7 @@ export default function LandingPage() {
       <RevealSection>
         <section className="py-40 text-center px-8 relative">
           <div className="absolute bottom-0 left-1/3 w-[400px] h-[300px] bg-gradient-to-t from-violet-500/10 to-transparent blur-[100px]" />
-          <div className="absolute bottom-0 right-1/3 w-[400px] h-[300px] bg-gradient-to-t from-fuchsia-500/8 to-transparent blur-[100px]" />
+          <div className="absolute bottom-0 right-1/3 w-[400px] h-[300px] bg-gradient-to-t from-fuchsia-500/[0.08] to-transparent blur-[100px]" />
           <div className="relative">
             <h2 className="text-5xl md:text-7xl font-bold tracking-tighter mb-8">
               {t.cta.line1}

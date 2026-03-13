@@ -284,7 +284,7 @@ export default function TradesPage() {
               </div>
               <div>
                 <p className="text-xs text-text-muted">Trades Today</p>
-                <p className="text-xl font-bold text-text-primary">
+                <p className="text-xl font-bold font-mono text-text-primary">
                   {todayTrades.length}
                 </p>
               </div>
@@ -310,7 +310,7 @@ export default function TradesPage() {
                 <p className="text-xs text-text-muted">P/L Today</p>
                 <p
                   className={cn(
-                    "text-xl font-bold",
+                    "text-xl font-bold font-mono",
                     totalPLToday >= 0 ? "text-success" : "text-danger"
                   )}
                 >
@@ -328,7 +328,7 @@ export default function TradesPage() {
               </div>
               <div>
                 <p className="text-xs text-text-muted">Win Rate Today</p>
-                <p className="text-xl font-bold text-text-primary">
+                <p className="text-xl font-bold font-mono text-text-primary">
                   {winRate.toFixed(1)}%
                 </p>
               </div>
@@ -343,7 +343,7 @@ export default function TradesPage() {
               </div>
               <div>
                 <p className="text-xs text-text-muted">Open Positions</p>
-                <p className="text-xl font-bold text-text-primary">
+                <p className="text-xl font-bold font-mono text-text-primary">
                   {mockTrades.filter((t) => t.status === "open").length}
                 </p>
               </div>
@@ -400,10 +400,10 @@ export default function TradesPage() {
               <TableHead>User</TableHead>
               <TableHead>Pair</TableHead>
               <TableHead>Direction</TableHead>
-              <TableHead>Size</TableHead>
-              <TableHead>Entry</TableHead>
-              <TableHead>Exit</TableHead>
-              <TableHead>P/L</TableHead>
+              <TableHead className="text-right">Size</TableHead>
+              <TableHead className="text-right">Entry</TableHead>
+              <TableHead className="text-right">Exit</TableHead>
+              <TableHead className="text-right">P/L</TableHead>
               <TableHead>Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -431,18 +431,18 @@ export default function TradesPage() {
                     {trade.direction}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-sm">{trade.size}</TableCell>
-                <TableCell className="text-sm font-mono">
+                <TableCell className="text-sm font-mono text-right">{trade.size}</TableCell>
+                <TableCell className="text-sm font-mono text-right">
                   {trade.entry_price?.toLocaleString("da-DK") ?? "-"}
                 </TableCell>
-                <TableCell className="text-sm font-mono">
+                <TableCell className="text-sm font-mono text-right">
                   {trade.exit_price?.toLocaleString("da-DK") ?? "-"}
                 </TableCell>
-                <TableCell>
+                <TableCell className="text-right">
                   {trade.profit_loss != null ? (
                     <span
                       className={cn(
-                        "font-medium",
+                        "font-medium font-mono",
                         trade.profit_loss >= 0 ? "text-success" : "text-danger"
                       )}
                     >
@@ -469,12 +469,12 @@ export default function TradesPage() {
             ))}
             {filteredTrades.length === 0 && (
               <TableRow>
-                <td
+                <TableCell
                   colSpan={9}
                   className="text-center py-8 text-text-muted text-sm"
                 >
                   No trades found
-                </td>
+                </TableCell>
               </TableRow>
             )}
           </TableBody>

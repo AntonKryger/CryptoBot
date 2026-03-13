@@ -131,13 +131,13 @@ export default function UserRow({ user, bots, trades }: UserRowProps) {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <p className="text-xs text-text-muted">Bots</p>
-                  <p className="text-lg font-semibold text-text-primary">
+                  <p className="text-lg font-semibold font-mono text-text-primary">
                     {bots.length}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-text-muted">Total Trades</p>
-                  <p className="text-lg font-semibold text-text-primary">
+                  <p className="text-lg font-semibold font-mono text-text-primary">
                     {trades.length}
                   </p>
                 </div>
@@ -145,7 +145,7 @@ export default function UserRow({ user, bots, trades }: UserRowProps) {
                   <p className="text-xs text-text-muted">Total P/L</p>
                   <p
                     className={cn(
-                      "text-lg font-semibold",
+                      "text-lg font-semibold font-mono",
                       totalPL >= 0 ? "text-success" : "text-danger"
                     )}
                   >

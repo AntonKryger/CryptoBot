@@ -41,7 +41,6 @@ export function PnlCard({ title, value, change, icon: Icon }: PnlCardProps) {
               isNegative && "bg-danger-muted text-danger"
             )}
           >
-            {isPositive && "+"}
             {formatPercent(change)}
           </span>
         )}

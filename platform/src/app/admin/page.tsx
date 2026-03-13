@@ -205,7 +205,7 @@ export default function AdminOverview() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-text-muted">{stat.label}</p>
-                    <p className="text-2xl font-bold text-text-primary mt-1">
+                    <p className="text-2xl font-bold font-mono text-text-primary mt-1">
                       {stat.isFormatted ? stat.value : stat.value.toLocaleString("da-DK")}
                     </p>
                   </div>
@@ -251,7 +251,7 @@ export default function AdminOverview() {
                         </p>
                         {log.details && (
                           <p className="text-xs text-text-muted truncate">
-                            {JSON.stringify(log.details)}
+                            {log.details ? Object.entries(log.details).map(([k, v]) => `${k}: ${v}`).join(" · ") : "-"}
                           </p>
                         )}
                       </div>
@@ -301,7 +301,7 @@ export default function AdminOverview() {
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-text-secondary">DB Connections</span>
-                    <span className="text-text-primary font-medium">12/100</span>
+                    <span className="text-text-primary font-medium font-mono">12/100</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-text-secondary">Last Updated</span>

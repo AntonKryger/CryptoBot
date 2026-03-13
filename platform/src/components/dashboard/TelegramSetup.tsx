@@ -139,10 +139,10 @@ export function TelegramSetup() {
   // Connected state
   if (state.step === "connected") {
     return (
-      <div className="rounded-xl border border-white/10 bg-bg-secondary p-6">
+      <div className="rounded-xl border border-border bg-bg-secondary p-6">
         <div className="flex items-center gap-3 mb-6">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/20">
-            <CheckCircle className="h-5 w-5 text-emerald-400" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/20">
+            <CheckCircle className="h-5 w-5 text-success" />
           </div>
           <div>
             <h3 className="text-sm font-semibold text-text-primary">
@@ -152,12 +152,12 @@ export function TelegramSetup() {
               Notifications are active
             </p>
           </div>
-          <span className="ml-auto inline-flex items-center rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-xs font-medium text-emerald-400">
+          <span className="ml-auto inline-flex items-center rounded-full bg-success/20 px-2.5 py-0.5 text-xs font-medium text-success">
             Connected
           </span>
         </div>
 
-        <div className="rounded-lg border border-white/5 bg-bg-primary p-4 mb-6">
+        <div className="rounded-lg border border-border bg-bg-primary p-4 mb-6">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs text-text-muted">Chat ID</p>
@@ -171,7 +171,7 @@ export function TelegramSetup() {
 
         <button
           onClick={disconnect}
-          className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 transition-colors hover:bg-red-500/20"
+          className="flex items-center gap-2 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2 text-sm font-medium text-danger transition-colors hover:bg-danger/20"
         >
           <XCircle className="h-4 w-4" />
           Disconnect Telegram
@@ -183,7 +183,7 @@ export function TelegramSetup() {
   // Pending verification state
   if (state.step === "pending") {
     return (
-      <div className="rounded-xl border border-white/10 bg-bg-secondary p-6">
+      <div className="rounded-xl border border-border bg-bg-secondary p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/20">
             <Send className="h-5 w-5 text-accent" />
@@ -213,7 +213,7 @@ export function TelegramSetup() {
         </div>
 
         {/* Instructions */}
-        <div className="rounded-lg border border-white/5 bg-bg-primary p-4 mb-4">
+        <div className="rounded-lg border border-border bg-bg-primary p-4 mb-4">
           <ol className="space-y-2 text-sm text-text-secondary">
             <li className="flex items-start gap-2">
               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/20 text-xs font-bold text-accent">
@@ -249,7 +249,7 @@ export function TelegramSetup() {
   // Generating state
   if (state.step === "generating") {
     return (
-      <div className="rounded-xl border border-white/10 bg-bg-secondary p-6">
+      <div className="rounded-xl border border-border bg-bg-secondary p-6">
         <div className="flex items-center justify-center py-12">
           <RefreshCw className="h-6 w-6 animate-spin text-accent" />
           <span className="ml-3 text-sm text-text-muted">
@@ -263,10 +263,10 @@ export function TelegramSetup() {
   // Error state
   if (state.step === "error") {
     return (
-      <div className="rounded-xl border border-white/10 bg-bg-secondary p-6">
+      <div className="rounded-xl border border-border bg-bg-secondary p-6">
         <div className="flex items-center gap-3 mb-4">
-          <XCircle className="h-5 w-5 text-red-400" />
-          <p className="text-sm text-red-400">{state.message}</p>
+          <XCircle className="h-5 w-5 text-danger" />
+          <p className="text-sm text-danger">{state.message}</p>
         </div>
         <button
           onClick={() => setState({ step: "idle" })}
@@ -280,7 +280,7 @@ export function TelegramSetup() {
 
   // Idle / initial state
   return (
-    <div className="rounded-xl border border-white/10 bg-bg-secondary p-6">
+    <div className="rounded-xl border border-border bg-bg-secondary p-6">
       <div className="flex items-center gap-3 mb-6">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/20">
           <MessageCircle className="h-5 w-5 text-accent" />
@@ -296,25 +296,25 @@ export function TelegramSetup() {
       </div>
 
       {/* What you'll receive */}
-      <div className="rounded-lg border border-white/5 bg-bg-primary p-4 mb-6">
+      <div className="rounded-lg border border-border bg-bg-primary p-4 mb-6">
         <p className="text-xs font-semibold text-text-primary mb-3 uppercase tracking-wider">
           Notifications you will receive
         </p>
         <ul className="space-y-2 text-sm text-text-secondary">
           <li className="flex items-center gap-2">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+            <CheckCircle className="h-3.5 w-3.5 text-success" />
             Trade opened / closed alerts
           </li>
           <li className="flex items-center gap-2">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+            <CheckCircle className="h-3.5 w-3.5 text-success" />
             Daily P/L summary
           </li>
           <li className="flex items-center gap-2">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+            <CheckCircle className="h-3.5 w-3.5 text-success" />
             Bot status changes (started, stopped, errors)
           </li>
           <li className="flex items-center gap-2">
-            <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+            <CheckCircle className="h-3.5 w-3.5 text-success" />
             Risk alerts (circuit breaker, max drawdown)
           </li>
         </ul>

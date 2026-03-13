@@ -9,6 +9,7 @@ import {
   TableBody,
   TableRow,
   TableHead,
+  TableCell,
 } from "@/components/ui/table";
 import UserRow from "@/components/admin/UserRow";
 import type { Profile, BotInstance, Trade } from "@/lib/supabase/types";
@@ -366,12 +367,12 @@ export default function UsersPage() {
             ))}
             {filteredUsers.length === 0 && (
               <TableRow>
-                <td
+                <TableCell
                   colSpan={8}
                   className="text-center py-8 text-text-muted text-sm"
                 >
                   No users found matching &quot;{search}&quot;
-                </td>
+                </TableCell>
               </TableRow>
             )}
           </TableBody>

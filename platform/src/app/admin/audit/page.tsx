@@ -391,12 +391,12 @@ export default function AuditPage() {
             ))}
             {filteredLogs.length === 0 && (
               <TableRow>
-                <td
+                <TableCell
                   colSpan={6}
                   className="text-center py-8 text-text-muted text-sm"
                 >
                   No audit logs found
-                </td>
+                </TableCell>
               </TableRow>
             )}
           </TableBody>

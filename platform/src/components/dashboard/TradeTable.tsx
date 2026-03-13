@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -121,12 +122,12 @@ export function TradeTable() {
           </h3>
           <p className="text-sm text-text-muted">Last 8 trades</p>
         </div>
-        <a
+        <Link
           href="/dashboard/trades"
           className="text-sm font-medium text-accent hover:text-accent/80 transition-colors"
         >
           View All &rarr;
-        </a>
+        </Link>
       </div>
 
       <Table>
