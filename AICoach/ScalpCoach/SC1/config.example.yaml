@@ -1,0 +1,30 @@
+bot:
+  id: "SC1"
+  name: "Scalp Coach 01"
+  type: "coach"
+
+coach:
+  type: "scalper"
+  analysis_days: 30
+  schedule: "daily"
+  strategy_context: |
+    Du evaluerer ScalpingBots. Disse bots handler på range-baserede signaler
+    (buy zone, sell zone, range-position, Bollinger Bands).
+    Scalper bots har kortere holdtid og højere frekvens end RuleBots.
+    En konservativ scalper bør lave 5-12 trades/dag.
+    En aggressiv scalper kan lave 15-40 trades/dag.
+    Sammenlign KUN ScalpBots med andre ScalpBots.
+
+capital:
+  email: "your-email@example.com"
+  password: "your-password"
+  api_key: "your-api-key"
+  demo: true
+
+telegram:
+  enabled: false
+  bot_token: "your-telegram-bot-token"
+  chat_id: "your-chat-id"
+
+database:
+  path: "data/trades.db"

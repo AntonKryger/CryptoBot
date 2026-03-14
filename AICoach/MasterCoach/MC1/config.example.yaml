@@ -1,0 +1,30 @@
+bot:
+  id: "MC1"
+  name: "Master Coach 01"
+  type: "coach"
+
+coach:
+  type: "master"
+  analysis_days: 14
+  schedule: "weekly"
+  strategy_context: |
+    Du er Master Coach. Du sammenligner de BEDSTE varianter fra hver bot-type.
+    Dit job er at besvare:
+    1. Hvilken bot-type performer bedst i dette markedsklima?
+    2. Hvilke 3-5 varianter bør tilbydes til kunder lige nu?
+    3. Hvilke varianter bør pensioneres (negativ Sharpe efter 50+ trades)?
+    Du læser rapporter fra RuleCoach, AICoach og ScalpCoach.
+
+capital:
+  email: "your-email@example.com"
+  password: "your-password"
+  api_key: "your-api-key"
+  demo: true
+
+telegram:
+  enabled: false
+  bot_token: "your-telegram-bot-token"
+  chat_id: "your-chat-id"
+
+database:
+  path: "data/trades.db"

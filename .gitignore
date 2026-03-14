@@ -33,3 +33,7 @@ Thumbs.db
 
 # Docker
 .dockerignore
+
+# Generated files (from scripts/generate_variant.py)
+docker-compose.generated.yml
+.vercel/

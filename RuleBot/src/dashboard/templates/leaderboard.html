@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard - CryptoBot Dashboard{% endblock %}
+
+{% block content %}
+<h1>Leaderboard</h1>
+
+<div class="leaderboard-controls" style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+    <button class="btn-filter active" data-filter="all" onclick="filterBots('all')">Alle</button>
+    <button class="btn-filter" data-filter="rule" onclick="filterBots('rule')">Rule</button>
+    <button class="btn-filter" data-filter="scalp" onclick="filterBots('scalp')">Scalper</button>
+    <button class="btn-filter" data-filter="ai" onclick="filterBots('ai')">AI</button>
+</div>
+
+<div class="table-wrapper" style="overflow-x:auto">
+    <table class="leaderboard-table" id="leaderboardTable">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th data-sort="bot" class="sortable">Bot</th>
+                <th data-sort="composite_score" class="sortable sorted-desc">Score</th>
+                <th data-sort="total_pl" class="sortable">P&L (EUR)</th>
+                <th data-sort="win_rate" class="sortable">Win Rate</th>
+                <th data-sort="profit_factor" class="sortable">PF</th>
+                <th data-sort="sharpe" class="sortable">Sharpe</th>
+                <th data-sort="trades" class="sortable">Trades</th>
+                <th data-sort="trades_per_day" class="sortable">Trades/dag</th>
+                <th data-sort="max_drawdown" class="sortable">Max DD</th>
+                <th data-sort="avg_win" class="sortable">Avg Win</th>
+                <th data-sort="avg_loss" class="sortable">Avg Loss</th>
+            </tr>
+        </thead>
+        <tbody id="leaderboardBody">
+            <tr><td colspan="12" style="text-align:center;padding:2rem;color:#999">Henter data...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="chart-grid" style="margin-top:2rem">
+    <div class="chart-card">
+        <h3>Composite Score</h3>
+        <canvas id="scoreChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>P&L Sammenligning</h3>
+        <canvas id="plChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .leaderboard-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+    .leaderboard-table th,
+    .leaderboard-table td {
+        padding: 0.6rem 0.8rem;
+        text-align: right;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        white-space: nowrap;
+    }
+    .leaderboard-table th:first-child,
+    .leaderboard-table td:first-child,
+    .leaderboard-table th:nth-child(2),
+    .leaderboard-table td:nth-child(2) {
+        text-align: left;
+    }
+    .leaderboard-table th {
+        color: #999;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+    }
+    .leaderboard-table th.sortable:hover {
+        color: #fff;
+    }
+    .leaderboard-table th.sorted-asc::after { content: " \25B2"; font-size: 0.7rem; }
+    .leaderboard-table th.sorted-desc::after { content: " \25BC"; font-size: 0.7rem; }
+    .leaderboard-table tr:hover {
+        background: rgba(255,255,255,0.04);
+    }
+    .row-top { border-left: 3px solid #00d4aa; }
+    .row-bottom { border-left: 3px solid #ff4757; }
+    .row-neutral { border-left: 3px solid #666; }
+    .score-badge {
+        display: inline-block;
+        padding: 0.15rem 0.5rem;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
+    .score-top { background: rgba(0,212,170,0.15); color: #00d4aa; }
+    .score-neutral { background: rgba(255,165,2,0.12); color: #ffa502; }
+    .score-bottom { background: rgba(255,71,87,0.12); color: #ff4757; }
+    .btn-filter {
+        padding: 0.3rem 0.8rem;
+        border: 1px solid #444;
+        background: transparent;
+        color: #ccc;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+    .btn-filter.active {
+        background: #00d4aa;
+        color: #1a1a2e;
+        border-color: #00d4aa;
+        font-weight: 600;
+    }
+    .btn-filter:hover:not(.active) {
+        border-color: #00d4aa;
+        color: #fff;
+    }
+</style>
+<script>
+    let leaderboardData = [];
+    let currentFilter = 'all';
+    let currentSort = 'composite_score';
+    let sortAsc = false;
+
+    async function loadLeaderboard() {
+        const resp = await fetch('/api/leaderboard');
+        leaderboardData = await resp.json();
+        renderTable();
+        renderCharts();
+    }
+
+    function filterBots(type) {
+        currentFilter = type;
+        document.querySelectorAll('.btn-filter').forEach(b => {
+            b.classList.toggle('active', b.dataset.filter === type);
+        });
+        renderTable();
+        renderCharts();
+    }
+
+    function getFiltered() {
+        if (currentFilter === 'all') return leaderboardData;
+        return leaderboardData.filter(e => {
+            const b = e.bot.toLowerCase();
+            if (currentFilter === 'rule') return b.startsWith('r');
+            if (currentFilter === 'scalp') return b.startsWith('s');
+            if (currentFilter === 'ai') return b.startsWith('a');
+            return true;
+        });
+    }
+
+    function sortBy(key) {
+        if (currentSort === key) {
+            sortAsc = !sortAsc;
+        } else {
+            currentSort = key;
+            sortAsc = key === 'bot'; // alphabetical default asc
+        }
+        // Update header classes
+        document.querySelectorAll('.leaderboard-table th').forEach(th => {
+            th.classList.remove('sorted-asc', 'sorted-desc');
+            if (th.dataset.sort === key) {
+                th.classList.add(sortAsc ? 'sorted-asc' : 'sorted-desc');
+            }
+        });
+        renderTable();
+    }
+
+    function renderTable() {
+        let data = getFiltered().slice();
+        data.sort((a, b) => {
+            let va = a[currentSort], vb = b[currentSort];
+            if (typeof va === 'string') {
+                return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+            }
+            return sortAsc ? va - vb : vb - va;
+        });
+
+        const tbody = document.getElementById('leaderboardBody');
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:2rem;color:#999">Ingen data</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.map((e, i) => {
+            const plClass = e.total_pl >= 0 ? 'positive' : 'negative';
+            const scoreClass = e.rank_tier === 'top' ? 'score-top' : e.rank_tier === 'bottom' ? 'score-bottom' : 'score-neutral';
+            const rowClass = 'row-' + e.rank_tier;
+            return `<tr class="${rowClass}">
+                <td>${i + 1}</td>
+                <td><a href="/?bot=${e.bot}" style="color:#00d4aa;text-decoration:none;font-weight:600">${e.bot.toUpperCase()}</a></td>
+                <td><span class="score-badge ${scoreClass}">${e.composite_score.toFixed(1)}</span></td>
+                <td class="${plClass}">${e.total_pl.toFixed(2)}</td>
+                <td>${e.win_rate.toFixed(1)}%</td>
+                <td>${e.profit_factor.toFixed(2)}</td>
+                <td>${e.sharpe.toFixed(2)}</td>
+                <td>${e.trades}</td>
+                <td>${e.trades_per_day.toFixed(1)}</td>
+                <td class="negative">${e.max_drawdown.toFixed(2)}</td>
+                <td class="positive">${e.avg_win.toFixed(2)}</td>
+                <td class="negative">${e.avg_loss.toFixed(2)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    let scoreChart, plChart;
+
+    function renderCharts() {
+        const data = getFiltered();
+        const labels = data.map(e => e.bot.toUpperCase());
+        const scores = data.map(e => e.composite_score);
+        const pls = data.map(e => e.total_pl);
+
+        // Score bar chart
+        if (scoreChart) scoreChart.destroy();
+        const scoreColors = data.map(e =>
+            e.rank_tier === 'top' ? '#00d4aa' : e.rank_tier === 'bottom' ? '#ff4757' : '#ffa502'
+        );
+        scoreChart = new Chart(document.getElementById('scoreChart'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Composite Score',
+                    data: scores,
+                    backgroundColor: scoreColors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#999' } },
+                    y: { grid: { display: false }, ticks: { color: '#ccc' } },
+                },
+            }
+        });
+
+        // P&L bar chart
+        if (plChart) plChart.destroy();
+        const plColors = pls.map(v => v >= 0 ? '#00d4aa' : '#ff4757');
+        plChart = new Chart(document.getElementById('plChart'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Total P&L (EUR)',
+                    data: pls,
+                    backgroundColor: plColors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#999' } },
+                    y: { grid: { display: false }, ticks: { color: '#ccc' } },
+                },
+            }
+        });
+    }
+
+    // Sortable headers
+    document.querySelectorAll('.leaderboard-table th.sortable').forEach(th => {
+        th.addEventListener('click', () => sortBy(th.dataset.sort));
+    });
+
+    loadLeaderboard();
+</script>
+{% endblock %}

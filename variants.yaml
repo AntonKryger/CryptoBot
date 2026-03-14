@@ -1,0 +1,248 @@
+# Central variant registry — all bot variants defined here
+# Run: python scripts/generate_variant.py to generate configs + docker-compose
+
+profiles:
+  ultra_conservative:
+    stop_loss: 1.5
+    take_profit: 3.5
+    max_open_positions: 2
+    allocation: {max_total_exposure: 10}
+    min_rr_ratio: 3.0
+    circuit_breaker_losses: 2
+    daily_loss_limit: 3.0
+
+  conservative:
+    stop_loss: 2.0
+    take_profit: 5.0
+    max_open_positions: 2
+    allocation: {max_total_exposure: 30}
+    min_rr_ratio: 2.5
+    circuit_breaker_losses: 2
+    daily_loss_limit: 3.0
+
+  balanced:
+    stop_loss: 2.5
+    take_profit: 5.0
+    max_open_positions: 3
+    allocation: {max_total_exposure: 50}
+    min_rr_ratio: 2.0
+    circuit_breaker_losses: 3
+    daily_loss_limit: 4.0
+
+  moderate:
+    stop_loss: 3.5
+    take_profit: 6.0
+    max_open_positions: 4
+    allocation: {max_total_exposure: 70}
+    min_rr_ratio: 1.75
+    circuit_breaker_losses: 3
+    daily_loss_limit: 5.0
+
+  moderate_aggressive:
+    stop_loss: 4.0
+    take_profit: 7.0
+    max_open_positions: 5
+    allocation: {max_total_exposure: 80}
+    min_rr_ratio: 1.75
+    circuit_breaker_losses: 3
+    daily_loss_limit: 5.0
+
+  aggressive:
+    stop_loss: 5.0
+    take_profit: 10.0
+    max_open_positions: 6
+    allocation: {max_total_exposure: 90}
+    min_rr_ratio: 1.5
+    circuit_breaker_losses: 4
+    daily_loss_limit: 7.0
+
+  ultra_aggressive:
+    stop_loss: 6.0
+    take_profit: 12.0
+    max_open_positions: 8
+    allocation: {max_total_exposure: 95}
+    min_rr_ratio: 1.5
+    circuit_breaker_losses: 5
+    daily_loss_limit: 10.0
+
+variants:
+  # ── RuleBots ────────────────────────────────────────────
+  RL1:
+    type: rule
+    mode: live
+    coins: [BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
+    profile: moderate
+    batch: baseline
+    status: active
+    overrides:
+      risk.stop_loss: 4.0
+      risk.take_profit: 7.0
+      trading.min_rr_ratio: 2.0
+      risk.max_open_positions: 6
+      signals.min_strength: 6
+
+  RD1:
+    type: rule
+    mode: demo
+    coins: [BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
+    profile: moderate
+    batch: baseline
+    status: active
+    overrides:
+      risk.stop_loss: 3.5
+      risk.take_profit: 6.0
+      trading.min_rr_ratio: 1.75
+      risk.max_open_positions: 4
+      signals.min_strength: 6
+
+  RD2:
+    type: rule
+    mode: demo
+    coins: [BTCUSD, ETHUSD]
+    profile: conservative
+    batch: A
+    status: active
+    overrides:
+      risk.stop_loss: 2.0
+      risk.take_profit: 5.0
+      trading.min_rr_ratio: 2.5
+      risk.max_open_positions: 2
+      signals.min_strength: 8
+      risk.max_hold_hours: {major: 8, altcoin: 8, memecoin: 4}
+
+  RD3:
+    type: rule
+    mode: demo
+    coins: [SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
+    profile: aggressive
+    batch: A
+    status: active
+    overrides:
+      risk.stop_loss: 5.0
+      risk.take_profit: 10.0
+      trading.min_rr_ratio: 2.0
+      risk.max_open_positions: 6
+      signals.min_strength: 5
+      risk.max_hold_hours: {major: 4, altcoin: 2, memecoin: 2}
+
+  # ── ScalpingBots (Kraken) ────────────────────────────────
+  SD1:
+    type: scalper
+    mode: live               # Kraken spot has no demo
+    coins: [BTC/USD, ETH/USD]
+    profile: conservative
+    batch: kraken
+    status: active
+    overrides:
+      exchange.provider: kraken
+      exchange.mode: spot
+      risk.stop_loss: 3.0
+      risk.take_profit: 6.0
+      risk.max_open_positions: 2
+      risk.allocation.max_total_exposure: 40
+      signals.min_strength: 7
+      watchdog.breakeven_trigger_pct: 3.5
+
+  SD2:
+    type: scalper
+    mode: live
+    coins: [SOL/USD, AVAX/USD, LINK/USD, LTC/USD]
+    profile: moderate
+    batch: kraken
+    status: active
+    overrides:
+      exchange.provider: kraken
+      exchange.mode: spot
+      risk.stop_loss: 4.0
+      risk.take_profit: 8.0
+      risk.max_open_positions: 3
+      signals.min_strength: 6
+
+  SD3:
+    type: scalper
+    mode: demo
+    coins: [BTCUSD, ETHUSD]
+    profile: conservative
+    batch: A
+    status: active
+    overrides:
+      risk.stop_loss: 2.0
+      risk.take_profit: 4.0
+      trading.min_rr_ratio: 2.0
+      risk.max_open_positions: 2
+      signals.min_strength: 7
+      risk.max_hold_hours: {major: 1, altcoin: 1, memecoin: 1}
+
+  SD4:
+    type: scalper
+    mode: demo
+    coins: [BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
+    profile: aggressive
+    batch: A
+    status: active
+    overrides:
+      risk.stop_loss: 5.0
+      risk.take_profit: 10.0
+      trading.min_rr_ratio: 1.5
+      risk.max_open_positions: 6
+      signals.min_strength: 4
+      risk.max_hold_hours: {major: 2, altcoin: 2, memecoin: 2}
+
+  # ── AIBots ──────────────────────────────────────────────
+  AD1:
+    type: ai
+    mode: demo
+    coins: [BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD]
+    profile: moderate
+    batch: baseline
+    status: active
+    overrides:
+      risk.stop_loss: 4.0
+      risk.take_profit: 7.0
+      trading.min_rr_ratio: 2.0
+      risk.max_open_positions: 3
+      ai.min_confidence: 6
+
+  AD2:
+    type: ai
+    mode: demo
+    coins: [BTCUSD, ETHUSD]
+    profile: conservative
+    batch: A
+    status: active
+    overrides:
+      risk.stop_loss: 2.0
+      risk.take_profit: 5.0
+      trading.min_rr_ratio: 2.5
+      risk.max_open_positions: 2
+      ai.min_confidence: 8
+      risk.max_hold_hours: {major: 8, altcoin: 8, memecoin: 4}
+
+  # ── Coaches ─────────────────────────────────────────────
+  AC1:
+    type: coach
+    coach_for: ai
+    mode: demo
+    batch: baseline
+    status: active
+
+  RC1:
+    type: coach
+    coach_for: rule
+    mode: demo
+    batch: A
+    status: active
+
+  SC1:
+    type: coach
+    coach_for: scalper
+    mode: demo
+    batch: A
+    status: active
+
+  MC1:
+    type: coach
+    coach_for: master
+    mode: demo
+    batch: A
+    status: active

@@ -35,11 +35,11 @@ class PositionWatchdog:
 
         watchdog_cfg = config.get("watchdog", {})
         self.check_interval = watchdog_cfg.get("check_interval", 12)
-        self.breakeven_trigger_pct = watchdog_cfg.get("breakeven_trigger_pct", 1.5)
+        self.breakeven_trigger_pct = watchdog_cfg.get("breakeven_trigger_pct", 2.5)
         self.trailing_trigger_pct = watchdog_cfg.get("trailing_trigger_pct", 2.5)
         self.trailing_atr_mult = watchdog_cfg.get("trailing_atr_mult", 1.5)
-        self.partial_profit_pct = watchdog_cfg.get("partial_profit_pct", 4.0)
-        self.partial_close_ratio = watchdog_cfg.get("partial_close_ratio", 0.5)
+        self.partial_profit_pct = watchdog_cfg.get("partial_profit_pct", 6.0)
+        self.partial_close_ratio = watchdog_cfg.get("partial_close_ratio", 0.3)
 
         # Internal state
         self._running = False
@@ -69,11 +69,12 @@ class PositionWatchdog:
 
         # Progressive trailing SL state
         self._last_sl_update = {}      # {deal_id: last_sl_price} - avoid API spam
-        self.progressive_sl_trigger = watchdog_cfg.get("progressive_sl_trigger_pct", 2.0)
+        self.progressive_sl_trigger = watchdog_cfg.get("progressive_sl_trigger_pct", 3.0)
         self.progressive_sl_trail = watchdog_cfg.get("progressive_sl_trail_pct", 1.0)
 
         # Profit pullback close - actively close when giving back profit
-        self.pullback_peak_trigger = watchdog_cfg.get("pullback_peak_trigger_pct", 2.5)
+        self.pullback_peak_trigger = watchdog_cfg.get("pullback_peak_trigger_pct", 4.0)
+        self.pullback_min_profit_pct = watchdog_cfg.get("pullback_min_profit_pct", 1.5)
         self.pullback_close_pct = watchdog_cfg.get("pullback_close_pct", 0.75)  # fallback only
 
         # Scale-in state
@@ -95,7 +96,7 @@ class PositionWatchdog:
         logger.info(
             f"Watchdog initialized (interval={self.check_interval}s, "
             f"breakeven={self.breakeven_trigger_pct}%, "
-            f"pullback_close=peak>{self.pullback_peak_trigger}%+adaptive_drop, "
+            f"pullback_close=peak>{self.pullback_peak_trigger}%+adaptive_drop+min{self.pullback_min_profit_pct}%, "
             f"partial={self.partial_profit_pct}%@{self.partial_close_ratio*100:.0f}%)"
         )
 
@@ -435,7 +436,7 @@ class PositionWatchdog:
 
         # -- Rule 3c: PROFIT PULLBACK CLOSE (adaptive) --
         adaptive_pullback = self._calculate_adaptive_pullback(epic, direction, pl_pct, deal_id)
-        if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= adaptive_pullback:
+        if peak_profit_pct >= self.pullback_peak_trigger and drawdown_from_peak_pct >= adaptive_pullback and pl_pct >= self.pullback_min_profit_pct:
             try:
                 logger.warning(
                     f"WATCHDOG: PROFIT PULLBACK closing {epic}! "

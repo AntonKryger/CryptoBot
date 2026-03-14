@@ -11,6 +11,7 @@ import {
   Users,
   Server,
   ScrollText,
+  Trophy,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ const mainNav: NavItem[] = [
   { label: "Charts", href: "/dashboard/charts", icon: CandlestickChart },
   { label: "Trades", href: "/dashboard/trades", icon: BarChart3 },
   { label: "Bots", href: "/dashboard/bots", icon: Bot },
+  { label: "Leaderboard", href: "/dashboard/leaderboard", icon: Trophy },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
 ];
 
