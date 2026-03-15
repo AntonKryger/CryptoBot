@@ -234,13 +234,6 @@ class KrakenBot:
 
     def _scan_cycle(self):
         """Main scan: iterate coins, detect regime, run strategy, execute trades."""
-        # Platform sync: heartbeat + kill switch check (every 5th cycle)
-        platform_killed = self.platform.on_scan_cycle()
-        if platform_killed:
-            self.notifier.notify_kill_switch("Platform kill switch activated")
-            self._running = False
-            return
-
         # Check kill switch
         balance_info = self.client.get_account_balance()
         if not balance_info:
@@ -248,6 +241,13 @@ class KrakenBot:
             return
 
         current_balance = balance_info["balance"]
+
+        # Platform sync: heartbeat + equity + kill switch check (every 5th cycle)
+        platform_killed = self.platform.on_scan_cycle(equity=current_balance)
+        if platform_killed:
+            self.notifier.notify_kill_switch("Platform kill switch activated")
+            self._running = False
+            return
         killed, reason = self.risk.check_kill_switch(current_balance)
         if killed:
             logger.critical(f"KILL SWITCH: {reason}")

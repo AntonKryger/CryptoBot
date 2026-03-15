@@ -155,6 +155,20 @@ class PlatformSync:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
+    # ── 2b. Equity Snapshot ────────────────────────────────────
+
+    def send_equity(self, equity):
+        """Send equity snapshot for balance chart. Called every scan cycle."""
+        if not self.enabled or not self.bot_instance_id or equity is None:
+            return
+
+        self._post("/api/sync/equity", {
+            "userId": self.user_id,
+            "botInstanceId": self.bot_instance_id,
+            "equity": round(equity, 2),
+            "exchange": self.exchange,
+        })
+
     # ── 3. Bot Status ──────────────────────────────────────────
 
     def send_status(self, status, uptime_pct=None):
@@ -229,8 +243,8 @@ class PlatformSync:
 
     # ── Scan cycle hook ────────────────────────────────────────
 
-    def on_scan_cycle(self):
-        """Called every scan cycle. Sends heartbeat + checks kill switch every 5 cycles."""
+    def on_scan_cycle(self, equity=None):
+        """Called every scan cycle. Sends heartbeat + equity + checks kill switch every 5 cycles."""
         if not self.enabled:
             return False
 
@@ -241,6 +255,9 @@ class PlatformSync:
                 return False
 
         self.send_heartbeat()
+
+        if equity is not None:
+            self.send_equity(equity)
 
         self._scan_count += 1
         if self._scan_count % 5 == 0:
