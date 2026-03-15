@@ -7,22 +7,58 @@ Next.js 14 + Supabase + Vercel platform til CryptoBot trading bots.
 - **Auth:** Supabase Auth (email/password, 2FA TOTP)
 - **Database:** Supabase (PostgreSQL, RLS)
 - **Payments:** Stripe (checkout, webhooks, tiers)
-- **Deployment:** Vercel (manual deploy, `npx vercel --prod` fra repo root)
+- **Charts:** TradingView Advanced Chart (iframe embed, Kraken data)
+- **AI Analyse:** Claude Haiku 4.5 via Anthropic API
+- **Data Service:** PlatformData container (Flask + ccxt, dedikeret Kraken API)
+- **Deployment:** Vercel (manual deploy) + VPS Docker (PlatformData)
 - **Kryptering:** AES-256-GCM for API keys
 
 ## Live URL
 https://platform-one-tawny.vercel.app
 
-## Deployment
+## Arkitektur
 
-```bash
-# Fra repo root (IKKE platform/)
-npx vercel --prod --yes
+```
+Bruger → Vercel (Next.js)
+           ├── Charts → TradingView iframe (direkte fra TradingView, Kraken data)
+           ├── AI Chat → /api/chart-analysis → Claude Haiku 4.5
+           │              └── /api/prices → PlatformData container (VPS:5100)
+           │                                  └── ccxt → Kraken API (dedikeret key)
+           ├── Leaderboard → /api/leaderboard → VPS Dashboard (VPS:5000)
+           └── Auth/DB → Supabase
+
+Bots → Kraken API (helt separat, egne API keys, egne rate limits)
 ```
 
-Vercel-projektet har `Root Directory: platform` i settings. `.vercel/project.json` skal ligge i repo root.
+### PlatformData Container
+Dedikeret data-service der isolerer platformens Kraken-kald fra bots:
+- **Port:** 5100 på VPS
+- **Tech:** Flask + ccxt + Gunicorn (2 workers)
+- **Endpoints:** `/api/prices`, `/api/ticker`, `/api/orderbook`, `/api/markets`, `/health`
+- **Cache:** 10s in-memory cache per endpoint
+- **CORS:** Kun `platform-one-tawny.vercel.app` + localhost
+- **Fallback:** Hvis PlatformData er nede, falder `/api/prices` tilbage til Kraken public API direkte
 
-## Env Vars (Vercel)
+## Deployment
+
+### Platform (Vercel)
+```bash
+# Fra repo root (IKKE platform/)
+npx vercel --prod
+```
+Vercel-projektet har `Root Directory: platform` i settings.
+
+### PlatformData (VPS)
+```bash
+ssh -i ~/.ssh/id_ed25519 root@91.98.26.70
+cd /root/cryptobot
+git pull origin master
+docker compose up -d --build platform-data
+```
+
+## Env Vars
+
+### Vercel
 | Variabel | Beskrivelse |
 |----------|-------------|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
@@ -33,7 +69,18 @@ Vercel-projektet har `Root Directory: platform` i settings. `.vercel/project.jso
 | `STRIPE_PUBLISHABLE_KEY` | Stripe publishable key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
 | `SYNC_SECRET` | Shared secret for bot sync endpoints |
-| `VPS_DASHBOARD_URL` | **MANGLER** — VPS base URL for leaderboard proxy (f.eks. `http://91.98.26.70:5000`) |
+| `PLATFORM_DATA_URL` | PlatformData service URL (`http://91.98.26.70:5100`) |
+| `VPS_DASHBOARD_URL` | VPS dashboard URL for leaderboard (`http://91.98.26.70:5000`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for AI chart analyse |
+
+### VPS (.env fil, gitignored)
+| Variabel | Beskrivelse |
+|----------|-------------|
+| `PLATFORM_KRAKEN_API_KEY` | Dedikeret Kraken API key til platformen |
+| `PLATFORM_KRAKEN_API_SECRET` | Kraken API secret |
+| `CAPITAL_EMAIL` | Capital.com login |
+| `CAPITAL_PASSWORD` | Capital.com password |
+| `CAPITAL_API_KEY` | Capital.com API key |
 
 ## Sider
 
@@ -47,7 +94,7 @@ Vercel-projektet har `Root Directory: platform` i settings. `.vercel/project.jso
 - `/dashboard` — Overblik med charts og KPIs
 - `/dashboard/bots` — Bot-kort med exchange badge
 - `/dashboard/trades` — Trade-historik
-- `/dashboard/charts` — Detaljerede charts
+- `/dashboard/charts` — TradingView chart + AI Chart Analyst
 - `/dashboard/leaderboard` — Bot ranking (proxy til VPS)
 - `/dashboard/settings` — Profil, exchange connection, tema
 - `/dashboard/telegram` — Telegram connection
@@ -60,62 +107,63 @@ Vercel-projektet har `Root Directory: platform` i settings. `.vercel/project.jso
 - `/admin/audit` — Audit log
 
 ### API
-- `/api/exchange/verify` — Verificer exchange credentials
-- `/api/exchange/save` — Gem krypterede credentials
-- `/api/leaderboard` — Proxy til VPS dashboard (auth-beskyttet)
-- `/api/onboarding/complete` — Afslut onboarding wizard
-- `/api/sync/*` — 5 endpoints for Python bot sync
-- `/api/stripe/*` — Checkout + webhook
-- `/api/telegram/*` — Generate code, verify, disconnect, status
-- `/api/prices` — Live krypto priser
+| Endpoint | Metode | Beskrivelse |
+|----------|--------|-------------|
+| `/api/prices` | GET | Krypto OHLCV data (PlatformData → Kraken fallback) |
+| `/api/chart-analysis` | POST | AI chart analyse via Claude Haiku |
+| `/api/leaderboard` | GET | Proxy til VPS dashboard (auth-beskyttet) |
+| `/api/exchange/verify` | POST | Verificer exchange credentials |
+| `/api/exchange/save` | POST | Gem krypterede credentials |
+| `/api/onboarding/complete` | POST | Afslut onboarding wizard |
+| `/api/sync/*` | POST | 5 endpoints for Python bot sync |
+| `/api/stripe/*` | POST | Checkout + webhook |
+| `/api/telegram/*` | POST | Generate code, verify, disconnect, status |
 
-## Multi-Exchange Arkitektur (2026-03-14)
+## Charts & AI Analyse (2026-03-15)
 
-Platformen understøtter multiple exchanges. Kun Capital.com er aktiv; resten vises som "Kommer snart".
+### TradingView Advanced Chart
+- Fuldt TradingView charting widget via iframe embed
+- **Datakilde:** Kraken via TradingView (ikke Capital.com)
+- **Features:** Tegneværktøjer, 100+ indikatorer, alle chart types, alle timeframes
+- 25+ coins med hurtig-selector (BTC, ETH, SOL, XRP, ADA, DOGE) + søgbar dropdown
+- Brugerens lokale tidszone automatisk
+- Dark theme matcher platform
 
-### Registry
-`src/lib/exchanges.ts` — single source of truth for alle exchanges:
-- **Active:** Capital.com (3 credential fields: apiKey, apiPassword, identifier)
-- **Coming soon:** Binance, Kraken, Bybit, OKX, Coinbase (2 fields: apiKey, apiSecret)
+### AI Chart Analyst
+- Claude Haiku 4.5 analyserer live Kraken data
+- Henter 100 candles fra PlatformData, beregner:
+  - Swing highs/lows (S/R niveauer)
+  - Fibonacci retracement (0.236, 0.382, 0.5, 0.618, 0.786)
+  - Volume, momentum, trend-retning
+- Svarer på dansk med konkrete priser
+- Timeframe-selector (15m, 1H, 4H, 1D) i chat header
+- Rate limit: 10 requests/min, max 500 chars spørgsmål, max 500 candles
+- **Kræver:** `ANTHROPIC_API_KEY` i Vercel env vars
+
+## Multi-Exchange Arkitektur
+
+Platformen understøtter multiple exchanges via registry i `src/lib/exchanges.ts`:
+- **Active:** Capital.com (3 credential fields), Kraken (chart data)
+- **Coming soon:** Binance, Bybit, OKX, Coinbase
 
 ### Database
-`exchange_accounts` tabellen bruger:
-- `exchange` kolonne med CHECK constraint for alle 6 exchanges
-- `credentials_encrypted` JSONB kolonne (erstatter 3 separate kolonner)
-- Migration: `supabase/migrations/20260313000002_multi_exchange.sql` (APPLIED)
-
-### Onboarding
-Step 2 viser exchange picker grid med 6 kort. Coming-soon exchanges er disabled med "Soon" badge. Credential-formularen renderer dynamisk baseret på valgt exchange's `credentialFields`.
-
-## Leaderboard
-
-Proxyer til VPS bot dashboard via `VPS_DASHBOARD_URL` env var.
-
-**Status:** HTTP 503 fordi `VPS_DASHBOARD_URL` ikke er sat i Vercel endnu.
-
-**TODO:** Sæt `VPS_DASHBOARD_URL` i Vercel env vars (f.eks. `http://91.98.26.70:<PORT>`).
-
-Features:
-- Auth-beskyttet API route
-- Filter per bot type (Rule/Scalper/AI)
-- Sortable kolonner med keyboard support
-- KPI cards (Aktive bots, Composite Score, P&L, Top Bot)
-- Response validation og AbortController cleanup
+`exchange_accounts` bruger JSONB `credentials_encrypted` kolonne med CHECK constraint for alle exchanges.
 
 ## Kendte Issues
 
-### VPS_DASHBOARD_URL mangler
-Leaderboard viser 503. Sæt env var i Vercel.
+### Mock Data
+Dashboard, bots, trades, admin panels bruger mock data. Næste step: connect til Supabase.
 
 ### RLS Infinite Recursion
 Migration fil klar (`20260313000001_fix_rls_recursion.sql`) men IKKE kørt endnu.
 Middleware workaround: owner check bruger JWT `app_metadata.role`.
 
-### Mock Data
-Dashboard, bots, trades, admin panels bruger alle mock data. Næste step: connect til Supabase.
-
 ### Stripe Placeholders
 Reelle Stripe products + prices skal oprettes i Stripe dashboard.
+
+### Credentials i Git-historik
+Capital.com credentials var hardcoded i `docker-compose.yml` og er i git-historikken.
+Credentials er nu i `.env` (gitignored). **Roter Capital.com password.**
 
 ## DB Migrations
 
@@ -125,6 +173,14 @@ Reelle Stripe products + prices skal oprettes i Stripe dashboard.
 | `20260313000001_fix_rls_recursion.sql` | **IKKE kørt** | RLS recursion fix |
 | `20260313000002_multi_exchange.sql` | Applied | Multi-exchange support |
 
+## Docker Containers (VPS)
+
+| Container | Port | Formål |
+|-----------|------|--------|
+| `cryptobot-dashboard` | 5000 | Bot dashboard + leaderboard API |
+| `cryptobot-platform-data` | 5100 | Dedikeret Kraken data service for platform |
+| `cryptobot-rl1/rd1/ad1/...` | — | Trading bots (ingen ekstern port) |
+
 ## Udvikling
 
 ```bash
@@ -132,4 +188,11 @@ cd platform
 npm install
 npm run dev      # http://localhost:3000
 npx next build   # Type-check + build
+```
+
+### Tilføj env var til Vercel
+```bash
+cd platform
+npx vercel env add VARIABEL_NAVN production
+# Paste value og tryk Enter
 ```
