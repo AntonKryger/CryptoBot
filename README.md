@@ -11,24 +11,37 @@ Automatiseret crypto trading-system med multi-exchange support:
 ## Status
 **Aktiv** — koerer 24/7 paa Hetzner VPS (91.98.26.70) via Docker.
 
-**Sidst opdateret:** 14-03-2026
+**Sidst opdateret:** 15-03-2026
 
 ### Aktive Bots
 
-| Bot | Exchange | Mode | Coins | Profil | Beskrivelse |
-|-----|----------|------|-------|--------|-------------|
-| RL1 | Capital.com | Live | BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD | moderate | Regelbaseret, rigtige penge |
-| RD1 | Capital.com | Demo | Samme 6 coins | moderate | Regelbaseret, demo |
-| AD1 | Capital.com | Demo | Samme 6 coins | moderate | AI-drevet med cycle trading |
-| SD1 | **Kraken** | Live (spot) | BTC/USD, ETH/USD | conservative | Major pair scalper |
-| SD2 | **Kraken** | Live (spot) | SOL/USD, AVAX/USD, LINK/USD, LTC/USD | moderate | Altcoin scalper |
+#### Capital.com (CFD)
+| Bot | Mode | Coins | Profil | Beskrivelse |
+|-----|------|-------|--------|-------------|
+| RL1 | Live | BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD | moderate | Regelbaseret, rigtige penge |
+| RD1 | Demo | Samme 6 coins | moderate | Regelbaseret, demo |
+| AD1 | Demo | Samme 6 coins | moderate | AI-drevet med cycle trading |
+
+#### Kraken Margin (LIVE siden 15-03-2026)
+| Bot | Strategi | Leverage | Coins | Telegram |
+|-----|----------|----------|-------|----------|
+| KG1-M | Grid | 5x | BTC/USD, ETH/USD | @CB_MG1_bot |
+| KT1-M | Trend Follower | 5x | ETH/USD, BTC/USD | @CB_MT1_bot |
+| KM1-M | Mean Reversion | 5x | ETH/USD, SOL/USD | @CB_MM1_bot |
+| KV1-M | Volatility | 5x | ETH/USD, SOL/USD | @CB_MV1_bot |
+
+#### Stoppet
+| Bot | Grund |
+|-----|-------|
+| SD1 | Erstattet af KrakenMarginBot (API key ugyldig) |
+| SD2 | Erstattet af KrakenMarginBot (API key ugyldig) |
 
 ### Exchanges
 
 | Exchange | Type | Fordele | Bots |
 |----------|------|---------|------|
 | Capital.com | CFD broker | Demo-konti, ingen rigtige crypto assets | RL1, RD1, AD1 |
-| Kraken | Rigtig exchange | Lav spread ($0.10 BTC vs $30+ CFD), orderbook, limit orders, 24/7 | SD1, SD2 |
+| Kraken | Rigtig exchange (spot margin) | 5x leverage, lav spread, orderbook, 24/7 | KG1-M, KT1-M, KM1-M, KV1-M |
 
 **KRITISK BUG:** P/L-vaerdier i Capital.com dashboard stemmer IKKE overens med Capital.com. Se [Kendte Fejl](#kritisk-pl-data-integritetsproblem).
 

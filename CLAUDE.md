@@ -33,6 +33,15 @@ AICoach/                  ← coaches share code too
   RuleCoach/RC1/          ← Rule Coach (coaches rule bots)
   ScalpCoach/SC1/         ← Scalp Coach (coaches scalper bots)
   MasterCoach/MC1/        ← Meta-coach (compares best from each type)
+
+KrakenMarginBot/          ← Kraken spot margin (5x leverage)
+  src/, main_kraken.py, Dockerfile, docker-compose.yml
+  Live/KG1/               ← Grid bot (margin)
+  Live/KT1/               ← Trend follower (margin)
+  Live/KM1/               ← Mean reversion (margin)
+  Live/KV1/               ← Volatility trader (margin)
+
+KrakenSpotBot/            ← Kraken spot backup (untouched copy of KrakenBots)
 ```
 
 Docker-compose mounts variant config as volume:
@@ -72,7 +81,7 @@ exchange:
   account_name: "RL1"
 ```
 
-### Kraken config:
+### Kraken config (spot):
 ```yaml
 exchange:
   provider: kraken
@@ -80,6 +89,18 @@ exchange:
   api_secret: "..."
   mode: spot          # spot (default) or futures
   demo: false         # futures has demo endpoint; spot does not
+```
+
+### Kraken config (spot margin):
+```yaml
+exchange:
+  provider: kraken
+  api_key: "..."
+  api_secret: "..."
+  mode: spot_margin   # spot_margin enables leverage on Kraken spot
+  margin_mode: cross  # cross (shared collateral) or isolated
+  leverage: 5         # 2-5x leverage
+  demo: false
 ```
 
 Legacy `capital:` config format is still supported as fallback.
@@ -104,6 +125,14 @@ Legacy `capital:` config format is still supported as fallback.
 - Spot has no demo mode — use futures sandbox for testing
 - SL/TP are separate conditional orders, not attached to positions
 - Spread is much lower than Capital.com ($0.10 BTC vs $30+ CFD)
+
+**Kraken Margin (spot_margin mode):**
+- `_margin_params()` adds `{"leverage": X}` to ALL orders (market, limit, SL, TP, batch)
+- Balance uses `private_post_tradebalance()` for equity/margin_used/free_margin/unrealized_pl
+- `margin_level` 0 = no open positions, >100% = healthy, <80% = Kraken liquidates
+- Risk defaults are tighter: daily_loss 3% (vs 5% spot), total_loss 15% (vs 30% spot)
+- `max_leverage` in risk config caps leverage regardless of exchange config
+- Kraken API lockout: too many requests from same IP → 15-30min timeout. Stagger scan_offset_seconds.
 
 ## Config Files
 Each variant has its own `config.yaml` in its directory. All `**/config.yaml` files are in `.gitignore`.
@@ -179,18 +208,48 @@ Each bot prints an identity banner at startup (Bot ID, email, credential hash, s
 
 ## Coins
 **Capital.com (CFD):** BTCUSD, ETHUSD, SOLUSD, AVAXUSD, LINKUSD, LTCUSD
-**Kraken (Spot):** BTC/USD, ETH/USD, SOL/USD, AVAX/USD, LINK/USD, LTC/USD
+**Kraken (Spot/Margin):** BTC/USD, ETH/USD, SOL/USD, AVAX/USD, LINK/USD, LTC/USD
 Banned on Capital.com: DOGEUSD, XRPUSD, ADAUSD, DOTUSD, MATICUSD
 
-## Current Bot Deployment (2026-03-14)
+## Telegram Bots
+| Bot | Telegram | Chat ID |
+|-----|----------|---------|
+| RL1 | @CB_RL1_bot | 7982569916 |
+| RD1 | @CB_RD1_bot | 7982569916 |
+| AD1 | existing | 7982569916 |
+| SD1 | @CB_SD1_bot (STOPPED) | 7982569916 |
+| SD2 | @CB_SD2_bot (STOPPED) | 7982569916 |
+| Coach | @CB_AI_COACH_bot | 7982569916 |
+| KG1-M | @CB_MG1_bot | 7982569916 |
+| KT1-M | @CB_MT1_bot | 7982569916 |
+| KM1-M | @CB_MM1_bot | 7982569916 |
+| KV1-M | @CB_MV1_bot | 7982569916 |
 
+## Current Bot Deployment (2026-03-15)
+
+### Capital.com Bots (CFD)
 | Bot | Exchange | Mode | Coins | Profile |
 |-----|----------|------|-------|---------|
 | RL1 | Capital.com | Live | All 6 | moderate |
 | RD1 | Capital.com | Demo | All 6 | moderate |
 | AD1 | Capital.com | Demo | All 6 | moderate |
-| SD1 | **Kraken** | Live (spot) | BTC/USD, ETH/USD | conservative |
-| SD2 | **Kraken** | Live (spot) | SOL/USD, AVAX/USD, LINK/USD, LTC/USD | moderate |
+
+### Kraken Spot Bots (STOPPED 2026-03-15)
+| Bot | Exchange | Mode | Coins | Profile | Status |
+|-----|----------|------|-------|---------|--------|
+| SD1 | Kraken | Live (spot) | BTC/USD, ETH/USD | conservative | STOPPED (invalid API key) |
+| SD2 | Kraken | Live (spot) | SOL/USD, AVAX/USD, LINK/USD, LTC/USD | moderate | STOPPED (invalid API key) |
+
+### Kraken Margin Bots (LIVE since 2026-03-15)
+| Bot | Strategy | Mode | Leverage | Coins | Telegram |
+|-----|----------|------|----------|-------|----------|
+| KG1-M | Grid | spot_margin (cross) | 5x | BTC/USD, ETH/USD | @CB_MG1_bot |
+| KT1-M | Trend | spot_margin (cross) | 5x | ETH/USD, BTC/USD | @CB_MT1_bot |
+| KM1-M | Mean Reversion | spot_margin (cross) | 5x | ETH/USD, SOL/USD | @CB_MM1_bot |
+| KV1-M | Volatility | spot_margin (cross) | 5x | ETH/USD, SOL/USD | @CB_MV1_bot |
+
+All 4 margin bots share one Kraken account ($225 equity), use shared coordinator for coin locking.
+Codebase: `KrakenMarginBot/` (separate from `KrakenSpotBot/` which is the untouched spot backup).
 
 ## CRITICAL BUG: P/L Data Integrity (2026-03-12)
 Dashboard P/L values DO NOT match Capital.com. Root causes:

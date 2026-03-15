@@ -1,0 +1,152 @@
+# KrakenMarginBot — Example Configuration
+# Copy this to Live/KG1/config.yaml (or KT1, KM1, KV1) and fill in credentials.
+# Values below are tuned for conservative margin trading (2026-03-14).
+
+bot:
+  id: KG1                          # Unique bot identifier
+  name: "Grid Trader (Margin)"
+  type: kraken
+
+exchange:
+  provider: kraken
+  api_key: "YOUR_KRAKEN_API_KEY"
+  api_secret: "YOUR_KRAKEN_API_SECRET"
+  mode: spot_margin                 # spot | spot_margin | futures
+  margin_mode: cross                # cross (shared collateral) | isolated (per-position)
+  leverage: 2                       # 2x leverage (conservative — max 5x on Kraken)
+  demo: false                       # futures only (spot/margin has no demo)
+
+strategy:
+  type: grid                        # grid | trend | mean_reversion | volatility
+
+  # --- Grid-specific (KG1) ---
+  grid_levels: 10
+  grid_spacing_pct: 1.0             # Fallback if ATR spacing disabled (was 0.5)
+  use_atr_spacing: true             # ATR-based spacing (recommended)
+  atr_spacing_mult: 0.8             # grid_spacing = ATR(14) * 0.8
+  range_detection: auto
+  rebalance_interval: 3600
+  adx_start_threshold: 18           # Don't start grid above this (was 20)
+  adx_stop_threshold: 28            # Stop grid above this (was 25)
+
+  # --- Trend-specific (KT1) ---
+  # ema_fast: 20
+  # ema_slow: 50
+  # adx_threshold: 28               # (was 25)
+  # trailing_stop_atr_mult: 3.0     # Start wide, tighten adaptively (was 2.0)
+  # trailing_levels:
+  #   breakeven_r: 1.0              # Move SL to entry at 1R profit
+  #   tight_1_r: 2.0                # Tighten to ATR×2.0 at 2R + partial exit
+  #   tight_2_r: 3.0                # Tighten to ATR×1.5 at 3R
+  #   tight_1_atr: 2.0
+  #   tight_2_atr: 1.5
+  # partial_exit_r: 2.0             # Close 50% at 2R
+  # partial_exit_ratio: 0.5
+
+  # --- MeanReversion-specific (KM1) ---
+  # bb_period: 20
+  # bb_std: 2.2                     # (was 2.0, better for crypto volatility)
+  # rsi_oversold: 30                # (was 25, less extreme)
+  # rsi_overbought: 70              # (was 75)
+  # adx_threshold: 18               # (was 20)
+
+  # --- Volatility-specific (KV1) ---
+  # Per-asset crash thresholds (flat 3% was too low for alts, too high for BTC)
+  # crash_thresholds:
+  #   BTC/USD: 2.0
+  #   ETH/USD: 2.5
+  #   SOL/USD: 4.0
+  #   AVAX/USD: 5.0
+  #   LINK/USD: 4.0
+  #   LTC/USD: 4.0
+
+risk:
+  profile: conservative
+  stop_loss: 2.0
+  take_profit: 5.0
+  max_open_positions: 4
+  max_leverage: 2                    # Safety cap: never exceed 2x (even if exchange allows 5x)
+  margin_call_warning_pct: 150       # Warn when margin level drops below 150%
+  daily_loss_limit: 3.0              # Tighter for margin (was 5% for spot) — leveraged losses amplified
+  total_loss_limit: 15.0             # Tighter for margin (was 20% for spot)
+  graduated_thresholds:
+    reduce_pct: 2.0                  # 2% daily loss → reduce position sizes 50% (was 3%)
+    stop_new_pct: 3.0                # 3% daily loss → stop opening new trades (was 4%)
+    close_all_pct: 4.0               # 4% daily loss → close everything (was 5%)
+  allocation:
+    max_total_exposure: 30           # % of equity (NOT leveraged value)
+    max_major: 25
+    max_altcoin: 15
+    min_position: 3
+
+execution:
+  max_spread_pct: 0.15               # Default fallback spread limit
+  use_limit_orders: false             # Aggressive limit orders (saves 0.10% fee)
+  limit_offset_pct: 0.01             # Limit price offset from best ask/bid
+  strategy_spread_limits:             # Per-strategy spread limits (override max_spread_pct)
+    grid: 0.15                        # Tight — grid profits are small
+    mean_reversion: 0.30
+    trend: 0.50                       # Loose — trend profits absorb spread
+    volatility: 0.50                  # Loose — volatility events have wide spreads
+  liquidity_check: true               # Check orderbook depth before trading
+  liquidity_multiplier: 5.0           # Need 5x position size in orderbook depth
+  liquidity_depth_pct: 0.3            # Sum depth within 0.3% of mid price
+  liquidity_fail_reduce: 0.5          # Reduce size 50% if orderbook unavailable (soft fallback)
+  order_timeout_minutes: 60           # Auto-cancel limit orders after 60 min
+  order_slicing: false                # Split large orders into chunks (reduces market impact)
+  slice_max_pct: 0.25                 # Max 25% of visible orderbook depth per slice
+  slice_delay_ms: 500                 # 500ms delay between slices
+
+circuit_breaker:
+  tiers:                              # Multi-tier: escalating pause based on move size
+    - threshold_pct: 3.0              # Mild move
+      pause_minutes: 5
+    - threshold_pct: 5.0              # Strong move
+      pause_minutes: 10
+    - threshold_pct: 8.0              # Extreme move (flash crash)
+      pause_minutes: 30
+
+trading:
+  coins:
+    - BTC/USD
+    - ETH/USD
+  timeframe: MINUTE_15
+  scan_interval: 60
+  scan_offset_seconds: 0
+  trade_cooldown: 300
+  stale_data_max_age: 30              # Default: 30s. Adaptive per timeframe:
+  # stale_data_max_age:               # Dict format (overrides default):
+  #   MINUTE: 10                      #   1m candles → 10s max age
+  #   MINUTE_5: 15                    #   5m candles → 15s max age
+  #   MINUTE_15: 30                   #   15m candles → 30s max age
+  #   HOUR: 120                       #   1h candles → 120s max age
+
+watchdog:
+  check_interval: 12
+  breakeven_trigger_pct: 2.5
+  progressive_sl_trigger_pct: 3.0
+  trailing_atr_mult: 1.5
+  partial_profit_pct: 6.0
+  partial_close_ratio: 0.3
+  pullback_peak_trigger_pct: 4.0
+  pullback_min_profit_pct: 1.5
+
+coordinator:
+  shared_path: /app/shared/coordinator.json
+  partner_type: trend               # The complementary bot
+  max_per_coin_pct: 25               # Max 25% of capital in one coin across ALL bots
+  global_max_drawdown_pct: 10.0      # GLOBAL kill-switch: stop ALL bots if portfolio drops 10%
+  exposure_limits:
+    grid: 30
+    trend: 30
+    mean_reversion: 20
+    volatility: 10
+
+telegram:
+  enabled: true
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
+
+database:
+  path: data/trades.db
+  positions_path: data/positions.db
