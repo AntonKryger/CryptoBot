@@ -135,6 +135,10 @@ class BaseExchangeAdapter(ABC):
         """Create multiple orders at once. Override in adapters that support it."""
         raise NotImplementedError("create_batch_orders not supported by this adapter")
 
+    def cancel_order(self, order_id: str, epic: str = None) -> bool:
+        """Cancel a single order by ID. Returns True on success."""
+        raise NotImplementedError("cancel_order not supported by this adapter")
+
     def cancel_all_orders(self, epic: str = None) -> int:
         """Cancel all open orders, optionally filtered by epic. Returns count cancelled."""
         raise NotImplementedError("cancel_all_orders not supported by this adapter")

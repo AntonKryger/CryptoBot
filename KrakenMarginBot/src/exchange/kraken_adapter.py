@@ -685,6 +685,17 @@ class KrakenAdapter(BaseExchangeAdapter):
                 })
         return results
 
+    def cancel_order(self, order_id: str, epic: str = None) -> bool:
+        """Cancel a single order by ID."""
+        try:
+            self._rate_limit()
+            symbol = _to_symbol(epic) if epic else None
+            self.exchange.cancel_order(order_id, symbol)
+            return True
+        except Exception as e:
+            logger.error(f"cancel_order failed {order_id}: {e}")
+            return False
+
     def cancel_all_orders(self, epic: str = None) -> int:
         """Cancel all open orders, optionally filtered by epic."""
         self._rate_limit()

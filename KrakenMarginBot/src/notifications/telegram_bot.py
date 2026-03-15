@@ -99,14 +99,14 @@ class TelegramNotifier:
             payload = {"chat_id": self.chat_id, "text": message}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
-            resp = requests.post(f"{self.base_url}/sendMessage", json=payload)
+            resp = requests.post(f"{self.base_url}/sendMessage", json=payload, timeout=10)
             resp.raise_for_status()
         except requests.exceptions.HTTPError as e:
             if "400" in str(e) and parse_mode == "HTML":
                 try:
                     requests.post(f"{self.base_url}/sendMessage", json={
                         "chat_id": self.chat_id, "text": message,
-                    }).raise_for_status()
+                    }, timeout=10).raise_for_status()
                 except Exception as e2:
                     logger.error(f"Telegram send failed (fallback): {e2}")
             else:
