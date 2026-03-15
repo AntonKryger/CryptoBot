@@ -75,7 +75,6 @@ class KrakenBot:
 
         # Platform sync
         self.platform = PlatformSync(self.config)
-        self.watchdog.platform_sync = self.platform
 
         # Trade executor
         self.executor = TradeExecutor(self.client, self.risk, self.config)
@@ -90,7 +89,7 @@ class KrakenBot:
             executor=self.executor
         )
         self.watchdog.strategy = self.strategy
-        self.watchdog.platform_sync = None  # Set after platform init
+        self.watchdog.platform_sync = self.platform
 
         # Trading config
         trading_cfg = self.config.get("trading", {})
