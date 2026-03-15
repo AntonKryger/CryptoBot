@@ -21,11 +21,16 @@ CORS(app)
 KRAKEN_API_KEY = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 
-exchange = ccxt.kraken({
-    "apiKey": KRAKEN_API_KEY,
-    "secret": KRAKEN_API_SECRET,
-    "enableRateLimit": True,
-})
+# Only pass credentials if they exist (public data works without)
+exchange_config: dict = {"enableRateLimit": True}
+if KRAKEN_API_KEY and KRAKEN_API_SECRET:
+    exchange_config["apiKey"] = KRAKEN_API_KEY
+    exchange_config["secret"] = KRAKEN_API_SECRET
+    log.info("Using authenticated Kraken API (higher rate limits)")
+else:
+    log.info("Using public Kraken API (no credentials)")
+
+exchange = ccxt.kraken(exchange_config)
 
 # Symbol aliases (BTC → XBT for Kraken)
 SYMBOL_ALIASES = {"BTC": "XBT"}
