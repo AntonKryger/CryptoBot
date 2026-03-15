@@ -64,6 +64,29 @@ services:
       - ./ScalpingBot/Demo/SD1/data:/app/bot_data/sd1:ro
       - ./ScalpingBot/Demo/SD2/data:/app/bot_data/sd2:ro
 
+  # ── KrakenBots (Pair 1: Grid + Trend) ─────────────────────
+  kg1:
+    build:
+      context: ./KrakenBots
+    container_name: cryptobot-kg1
+    restart: always
+    volumes:
+      - ./KrakenBots/Live/KG1/config.yaml:/app/config.yaml:ro
+      - ./KrakenBots/Live/KG1/data:/app/data
+      - ./KrakenBots/Live/KG1/logs:/app/logs
+      - kraken-shared-pair1:/app/shared
+
+  kt1:
+    build:
+      context: ./KrakenBots
+    container_name: cryptobot-kt1
+    restart: always
+    volumes:
+      - ./KrakenBots/Live/KT1/config.yaml:/app/config.yaml:ro
+      - ./KrakenBots/Live/KT1/data:/app/data
+      - ./KrakenBots/Live/KT1/logs:/app/logs
+      - kraken-shared-pair1:/app/shared
+
   dashboard:
     build:
       context: ./RuleBot
@@ -83,3 +106,19 @@ services:
       - ./AIBot/Demo/AD1/data:/app/bot_data/ad1:ro
       - ./ScalpingBot/Demo/SD1/data:/app/bot_data/sd1:ro
       - ./ScalpingBot/Demo/SD2/data:/app/bot_data/sd2:ro
+
+  # ── Platform Data Service (dedicated Kraken API, isolated from bots) ──
+  platform-data:
+    build:
+      context: ./PlatformData
+    container_name: cryptobot-platform-data
+    restart: always
+    ports:
+      - "0.0.0.0:5100:5100"
+    environment:
+      - KRAKEN_API_KEY=${PLATFORM_KRAKEN_API_KEY:-}
+      - KRAKEN_API_SECRET=${PLATFORM_KRAKEN_API_SECRET:-}
+
+volumes:
+  kraken-shared-pair1:
+    driver: local

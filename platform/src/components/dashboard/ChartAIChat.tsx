@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Bot, User, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -11,64 +11,45 @@ interface Message {
   timestamp: Date;
 }
 
+interface ApiCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 interface ChartAIChatProps {
   selectedCoin: string;
   className?: string;
 }
 
-// Mock AI responses based on coin context
-function getMockResponse(question: string, coin: string): string {
-  const q = question.toLowerCase();
-  const coinName = coin.replace("USD", "");
-
-  if (q.includes("trend") || q.includes("retning")) {
-    return `**${coinName} Markedsstruktur:**\n\nBaseret på 4H chart ser jeg en serie af Higher Highs og Higher Lows — det er en bullish impulse-struktur.\n\n**Key levels:**\n- Support: Fibonacci 0.618 retracement\n- Resistance: Seneste swing high\n\n**Anbefaling:** Kig efter BUY-entries ved pullbacks til 0.618 Fib-niveau. Undgå at shorte mod strukturen medmindre du ser et klart breakdown.`;
-  }
-
-  if (q.includes("support") || q.includes("resistance") || q.includes("s/r")) {
-    return `**${coinName} Support/Resistance Niveauer:**\n\n**Resistance zoner:**\n- R1: Seneste swing high (stærkest)\n- R2: Psykologisk rundt tal\n\n**Support zoner:**\n- S1: 0.618 Fibonacci retracement\n- S2: Seneste swing low\n\nDe stærkeste zoner er dem med confluence — hvor Fibonacci, swing points og runde tal mødes.`;
-  }
-
-  if (q.includes("elliott") || q.includes("wave") || q.includes("bølge")) {
-    return `**${coinName} Elliott Wave Analyse:**\n\nJeg ser en mulig 5-bølge impulsiv struktur:\n- Bølge 1: Første impuls op\n- Bølge 2: Korrektion til 0.618 Fib (typisk)\n- Bølge 3: Stærkeste bevægelse (vi er muligvis her)\n- Bølge 4: Shallow pullback (0.382 Fib)\n- Bølge 5: Final push til target\n\n**Husk:** Bølge 2 retracer typisk 0.618-0.786, og bølge 4 er shallow (0.236-0.382). Hvis pris bryder under bølge 1's top, er tællingen ugyldig.`;
-  }
-
-  if (q.includes("fib") || q.includes("fibonacci")) {
-    return `**${coinName} Fibonacci Niveauer:**\n\nFra seneste swing low til swing high:\n- 0.236: Svag pullback (trend er stærk)\n- 0.382: Normal retracement\n- 0.500: Midtpunkt\n- **0.618: Golden ratio** — stærkeste support/resistance\n- 0.786: Dyb retracement (sidste chance før reversal)\n\n**Trading strategi:**\nI en uptrend: Sæt buy-orders ved 0.618 med SL under 0.786. TP ved seneste high eller 1.618 extension.`;
-  }
-
-  if (q.includes("short") || q.includes("sell")) {
-    return `**${coinName} Short Setup Analyse:**\n\nFor at shorte sikkert skal du se:\n1. **Bearish markedsstruktur** (Lower Highs + Lower Lows)\n2. **RSI divergens** ved modstand\n3. **Pris ved key resistance** (Fib 0.618 retrace i downtrend)\n4. **Volume bekræftelse** på rejection\n\n⚠️ **Advarsel:** Short ALDRIG i en bullish impulse medmindre du er ved en MAJOR resistance med stærke reversal-signaler. Strukturen vinder altid.`;
-  }
-
-  if (q.includes("buy") || q.includes("køb") || q.includes("long")) {
-    return `**${coinName} Long Setup Analyse:**\n\nIdeel BUY-entry kræver:\n1. **Bullish markedsstruktur** (Higher Highs + Higher Lows)\n2. **Pullback til Fibonacci** 0.618 eller S/R zone\n3. **Bullish candle-mønster** ved support (hammer, engulfing)\n4. **MACD/RSI** vender op fra support\n\n**Risk management:** SL under swing low, TP ved næste resistance. Minimum R:R 2:1.`;
-  }
-
-  return `**${coinName} Analyse:**\n\nJeg kan hjælpe med:\n- **Trend analyse** — er vi i en impulse eller korrektion?\n- **Support/Resistance** — where are the key levels?\n- **Elliott Wave** — which wave are we in?\n- **Fibonacci** — retracement and extension levels\n- **Entry/Exit** — where to buy/sell?\n\nPrøv at spørge: "Hvad er trenden?" eller "Vis Fibonacci niveauer" eller "Skal jeg shorte her?"`;
-}
-
 export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
+  const coinName = selectedCoin.replace("USD", "");
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: `Hej! Jeg er din AI trading-analytiker. Spørg mig om **${selectedCoin.replace("USD", "")}** — trend, support/resistance, Elliott Waves, Fibonacci, eller entry/exit setups.`,
+      content: `Hej! Jeg analyserer **${coinName}/USD** live fra Kraken. Spørg mig om hvad som helst — trend, support/resistance, entry/exit, eller bare "hvad sker der?"`,
       timestamp: new Date(),
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedTimeframe, setSelectedTimeframe] = useState("HOUR");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Update welcome message when coin changes
   useEffect(() => {
+    const name = selectedCoin.replace("USD", "");
     setMessages([
       {
         id: "welcome",
         role: "assistant",
-        content: `Hej! Jeg er din AI trading-analytiker. Spørg mig om **${selectedCoin.replace("USD", "")}** — trend, support/resistance, Elliott Waves, Fibonacci, eller entry/exit setups.`,
+        content: `Hej! Jeg analyserer **${name}/USD** live fra Kraken. Spørg mig om hvad som helst — trend, support/resistance, entry/exit, eller bare "hvad sker der?"`,
         timestamp: new Date(),
       },
     ]);
@@ -78,6 +59,19 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const fetchCandles = useCallback(async (): Promise<ApiCandle[]> => {
+    try {
+      const resp = await fetch(
+        `/api/prices?epic=${selectedCoin}&resolution=${selectedTimeframe}&max=100`
+      );
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return data.candles || [];
+    } catch {
+      return [];
+    }
+  }, [selectedCoin, selectedTimeframe]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -94,20 +88,55 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
     setInput("");
     setIsLoading(true);
 
-    // Simulate AI thinking delay
-    await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
+    try {
+      // Fetch fresh candle data for AI context
+      const candles = await fetchCandles();
 
-    const response = getMockResponse(text, selectedCoin);
-    const aiMsg: Message = {
-      id: `ai-${Date.now()}`,
-      role: "assistant",
-      content: response,
-      timestamp: new Date(),
-    };
+      const resp = await fetch("/api/chart-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: text,
+          coin: selectedCoin,
+          candles,
+          timeframe: selectedTimeframe,
+        }),
+      });
 
-    setMessages((prev) => [...prev, aiMsg]);
-    setIsLoading(false);
-    inputRef.current?.focus();
+      let responseText: string;
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        responseText = err.error === "AI analysis not configured"
+          ? "AI-analyse er ikke konfigureret endnu. Sæt ANTHROPIC_API_KEY i Vercel env vars."
+          : "Beklager, der opstod en fejl. Prøv igen.";
+      } else {
+        const data = await resp.json();
+        responseText = data.response;
+      }
+
+      const aiMsg: Message = {
+        id: `ai-${Date.now()}`,
+        role: "assistant",
+        content: responseText,
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          content: "Netværksfejl. Tjek din forbindelse og prøv igen.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+      inputRef.current?.focus();
+    }
   };
 
   return (
@@ -118,15 +147,40 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
       )}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-muted">
-          <Bot className="h-4 w-4 text-accent" />
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-muted">
+            <Bot className="h-4 w-4 text-accent" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-text-primary">AI Chart Analyst</h3>
+            <p className="text-xs text-text-muted">
+              Analyserer {coinName}/USD
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 className="text-sm font-semibold text-text-primary">AI Chart Analyst</h3>
-          <p className="text-xs text-text-muted">
-            Analyserer {selectedCoin.replace("USD", "/USD")}
-          </p>
+
+        {/* Timeframe selector for AI context */}
+        <div className="flex gap-0.5">
+          {[
+            { value: "MINUTE_15", label: "15m" },
+            { value: "HOUR", label: "1H" },
+            { value: "HOUR_4", label: "4H" },
+            { value: "DAY", label: "1D" },
+          ].map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => setSelectedTimeframe(tf.value)}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
+                selectedTimeframe === tf.value
+                  ? "bg-accent-muted text-accent"
+                  : "text-text-muted hover:text-text-secondary"
+              )}
+            >
+              {tf.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -146,7 +200,7 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
               className={cn(
                 "max-w-[85%] rounded-lg px-3 py-2 text-sm",
                 msg.role === "user"
-                  ? "bg-accent text-white"
+                  ? "bg-accent-muted text-accent"
                   : "bg-bg-card-hover text-text-primary"
               )}
             >
@@ -177,8 +231,9 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-muted mt-0.5">
               <Bot className="h-3.5 w-3.5 text-accent" />
             </div>
-            <div className="bg-bg-card-hover rounded-lg px-3 py-2">
+            <div className="bg-bg-card-hover rounded-lg px-3 py-2 flex items-center gap-2">
               <Loader2 className="h-4 w-4 text-accent animate-spin" />
+              <span className="text-xs text-text-muted">Analyserer {coinName}...</span>
             </div>
           </div>
         )}
@@ -200,7 +255,7 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Spørg om trend, S/R, Fibonacci, waves..."
+            placeholder="Hvad sker der med prisen? Skal jeg købe?"
             className={cn(
               "flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm",
               "text-text-primary placeholder:text-text-muted",
