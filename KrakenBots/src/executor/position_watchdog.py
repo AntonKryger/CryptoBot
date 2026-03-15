@@ -316,6 +316,8 @@ class PositionWatchdog:
 
             if self.executor:
                 self.executor.update_trade_close(deal_id, current_price, partial_pl, epic=epic, exit_reason="partial_profit")
+            if hasattr(self, 'platform_sync') and self.platform_sync:
+                self.platform_sync.sync_trade_close(deal_id, exit_price=current_price, profit_loss=partial_pl)
         except Exception as e:
             logger.warning(f"Partial close failed for {deal_id}: {e}")
 
@@ -337,6 +339,8 @@ class PositionWatchdog:
 
             if self.executor:
                 self.executor.update_trade_close(deal_id, current_price, pl, epic=epic, exit_reason=reason)
+            if hasattr(self, 'platform_sync') and self.platform_sync:
+                self.platform_sync.sync_trade_close(deal_id, exit_price=current_price, profit_loss=pl)
 
             # Notify strategy
             if self.strategy:

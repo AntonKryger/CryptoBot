@@ -26,6 +26,7 @@ from src.executor.spot_position_tracker import SpotPositionTracker
 from src.executor.order_manager import OrderManager
 from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
+from src.notifications.platform_sync import PlatformSync
 
 # Configure logging
 logging.basicConfig(
@@ -72,11 +73,16 @@ class KrakenBot:
         self.notifier = TelegramNotifier(self.config)
         self.strategy.notifier = self.notifier
 
+        # Platform sync
+        self.platform = PlatformSync(self.config)
+        self.watchdog.platform_sync = self.platform
+
         # Trade executor
         self.executor = TradeExecutor(self.client, self.risk, self.config)
 
-        # Order manager (for Grid bot)
+        # Order manager (for Grid bot) — with position tracker for fill persistence
         self.order_manager = OrderManager(self.client, self.config)
+        self.order_manager.position_tracker = self.position_tracker
 
         # Position watchdog
         self.watchdog = PositionWatchdog(
@@ -84,6 +90,7 @@ class KrakenBot:
             executor=self.executor
         )
         self.watchdog.strategy = self.strategy
+        self.watchdog.platform_sync = None  # Set after platform init
 
         # Trading config
         trading_cfg = self.config.get("trading", {})
@@ -141,6 +148,16 @@ class KrakenBot:
         if balance_info:
             self.risk.initialize(balance_info["balance"])
             logger.info(f"Account balance: ${balance_info['balance']:.2f} (available: ${balance_info['available']:.2f})")
+
+            # Log margin status at startup
+            if balance_info.get("is_margin"):
+                logger.info(
+                    f"MARGIN MODE: {self.client.leverage}x leverage, {self.client.margin_mode} mode\n"
+                    f"  Equity: ${balance_info.get('equity', 0):.2f}\n"
+                    f"  Free margin: ${balance_info.get('free_margin', 0):.2f}\n"
+                    f"  Used margin: ${balance_info.get('margin_used', 0):.2f}\n"
+                    f"  Unrealized P/L: ${balance_info.get('unrealized_pl', 0):.2f}"
+                )
         else:
             logger.error("Could not fetch account balance")
             sys.exit(1)
@@ -154,6 +171,9 @@ class KrakenBot:
             except Exception as e:
                 logger.warning(f"Orphan order cleanup failed: {e}")
 
+        # Reconcile state with Kraken on startup
+        self._reconcile_on_startup()
+
         # Clean up stale coordinator locks
         self.coordinator.cleanup_stale_locks()
 
@@ -165,12 +185,19 @@ class KrakenBot:
         self.notifier.start_command_listener()
 
         # Announce startup
+        margin_tag = ""
+        if balance_info.get("is_margin"):
+            margin_tag = f"\nMode: MARGIN {self.client.leverage}x ({self.client.margin_mode})"
         self.notifier.send(
             f"🚀 <b>{self.bot_id} started</b>\n"
-            f"Strategy: {self.strategy_type}\n"
+            f"Strategy: {self.strategy_type}{margin_tag}\n"
             f"Coins: {', '.join(self.coins)}\n"
             f"Balance: ${balance_info['balance']:.2f}"
         )
+
+        # Register with SaaS platform
+        self.platform.register()
+        self.platform.send_status("running")
 
         # Apply scan offset for API rate limiting across bots
         if self.scan_offset > 0:
@@ -208,6 +235,13 @@ class KrakenBot:
 
     def _scan_cycle(self):
         """Main scan: iterate coins, detect regime, run strategy, execute trades."""
+        # Platform sync: heartbeat + kill switch check (every 5th cycle)
+        platform_killed = self.platform.on_scan_cycle()
+        if platform_killed:
+            self.notifier.notify_kill_switch("Platform kill switch activated")
+            self._running = False
+            return
+
         # Check kill switch
         balance_info = self.client.get_account_balance()
         if not balance_info:
@@ -222,8 +256,25 @@ class KrakenBot:
             self._running = False
             return
 
+        # Margin call detection (Tier 2: warn if margin level nears liquidation)
+        margin_warning, margin_msg = self.risk.check_margin_health(balance_info)
+        if margin_warning:
+            logger.critical(f"MARGIN WARNING: {margin_msg}")
+            self.notifier.send(
+                f"⚠️ <b>MARGIN WARNING: {self.bot_id}</b>\n"
+                f"{margin_msg}\n"
+                f"Consider closing positions to free margin."
+            )
+
         # Report equity + check global kill-switch across all bots
-        self.coordinator.update_equity(current_balance)
+        margin_info = None
+        if balance_info.get("is_margin"):
+            margin_info = {
+                "margin_level": balance_info.get("margin_level", 0),
+                "unrealized_pl": balance_info.get("unrealized_pl", 0),
+                "margin_used": balance_info.get("margin_used", 0),
+            }
+        self.coordinator.update_equity(current_balance, margin_info=margin_info)
         global_killed, global_reason = self.coordinator.check_global_kill_switch()
         if global_killed:
             logger.critical(f"GLOBAL KILL SWITCH: {global_reason}")
@@ -274,6 +325,14 @@ class KrakenBot:
                 if current_balance > 0 and fill_size and fill_price:
                     fill_exposure = (fill_size * fill_price) / current_balance * 100
                     self.coordinator.add_coin_exposure(fill["epic"], fill_exposure)
+                # Sync grid fill to platform
+                self.platform.sync_trade_open(
+                    deal_id=fill.get("order_id", ""),
+                    epic=fill.get("epic", ""),
+                    direction=fill.get("side", "BUY"),
+                    size=fill_size, entry_price=fill_price,
+                    signal_mode="grid",
+                )
 
         # Position reconciliation every 5 minutes (ChatGPT: sync local vs exchange)
         now_ts = time.time()
@@ -442,6 +501,14 @@ class KrakenBot:
                 self.coordinator.lock_coin(epic, exposure_pct=exposure_pct)
                 self.coordinator.clear_trade_request(epic)
                 self.strategy.on_position_opened({"epic": epic, "deal_id": deal_ref})
+                self.platform.sync_trade_open(
+                    deal_id=deal_ref, epic=epic, direction=direction,
+                    size=fill_size, entry_price=fill_price,
+                    stop_loss=signal.get("stop_loss"),
+                    take_profit=signal.get("take_profit"),
+                    signal_mode=self.strategy_type,
+                    signal_data=signal.get("details"),
+                )
                 self.notifier.notify_trade(
                     direction, epic, signal.get("size", 0),
                     signal["entry_price"], signal.get("stop_loss", 0),
@@ -563,6 +630,65 @@ class KrakenBot:
         if reconciled > 0:
             logger.info(f"[RECONCILE] Reconciled {reconciled} orphan positions")
 
+    def _reconcile_on_startup(self):
+        """Reconcile position tracker DB with actual Kraken state at boot.
+
+        Detects orphaned positions (Kraken has margin in use but tracker DB is empty)
+        and logs open orders that survived from a previous run.
+        """
+        try:
+            tracker = self.client.position_tracker
+            tracked = tracker.get_open_positions() if tracker else []
+
+            # Check margin status from Kraken API
+            margin_status = self.client.get_margin_status()
+            margin_used = float(margin_status.get("margin_used", 0)) if margin_status else 0
+
+            # Check open orders on Kraken
+            open_orders = self.client.fetch_open_orders()
+
+            logger.info(
+                f"[RECONCILE] Startup: tracked={len(tracked)} positions, "
+                f"margin_used=${margin_used:.2f}, open_orders={len(open_orders)}"
+            )
+
+            # Orphan detection: Kraken has margin in use but DB is empty
+            if margin_used > 0.01 and len(tracked) == 0:
+                logger.warning(
+                    f"[RECONCILE] Kraken has ${margin_used:.2f} margin in use "
+                    f"but position tracker DB is empty — orphaned position detected"
+                )
+                self.notifier.send(
+                    f"⚠️ <b>Reconciliation Warning</b>\n"
+                    f"Kraken margin used: ${margin_used:.2f}\n"
+                    f"Position tracker DB is empty — orphaned position detected\n"
+                    f"Manual intervention may be needed"
+                )
+
+            # DB has positions but Kraken has no margin — positions were closed externally
+            if margin_used < 0.01 and len(tracked) > 0:
+                logger.warning(
+                    f"[RECONCILE] DB has {len(tracked)} open positions but Kraken margin is $0 "
+                    f"— closing stale DB entries"
+                )
+                for pos in tracked:
+                    try:
+                        tracker.close_position(pos["deal_id"], exit_price=0, profit_loss=0)
+                    except Exception as e:
+                        logger.error(f"[RECONCILE] Failed to close stale position {pos['deal_id']}: {e}")
+
+            # Log open orders from Kraken (may be from previous grid run)
+            if open_orders:
+                logger.info(f"[RECONCILE] {len(open_orders)} open orders on Kraken at startup")
+                for o in open_orders:
+                    logger.info(
+                        f"  {o['epic']} {o['side']} {o['type']} "
+                        f"@ {o['price']} x {o['amount']}"
+                    )
+
+        except Exception as e:
+            logger.error(f"[RECONCILE] Startup reconciliation failed: {e}")
+
     def _register_commands(self):
         """Register Telegram commands."""
         self.notifier.register_command("/status", self._cmd_status)
@@ -606,11 +732,22 @@ class KrakenBot:
 
     def _cmd_balance(self, args):
         balance = self.client.get_account_balance()
-        return (
+        msg = (
             f"💰 <b>Kraken Balance</b>\n"
             f"Total: ${balance['balance']:.2f}\n"
             f"Available: ${balance['available']:.2f}"
         )
+        if balance.get("is_margin"):
+            msg += (
+                f"\n\n<b>Margin Info</b>\n"
+                f"Equity: ${balance.get('equity', 0):.2f}\n"
+                f"Used margin: ${balance.get('margin_used', 0):.2f}\n"
+                f"Free margin: ${balance.get('free_margin', 0):.2f}\n"
+                f"Unrealized P/L: ${balance.get('unrealized_pl', 0):.2f}\n"
+                f"Margin level: {balance.get('margin_level', 0):.0f}%\n"
+                f"Leverage: {balance.get('leverage', 1)}x"
+            )
+        return msg
 
     def _cmd_regime(self, args):
         msg = "📈 <b>Market Regimes</b>\n"
@@ -655,6 +792,7 @@ class KrakenBot:
         self._running = False
         self.watchdog.stop()
         self.notifier.stop_command_listener()
+        self.platform.send_status("stopped")
 
         # Grid bot: cancel all orders on shutdown
         if self.strategy_type == "grid" and hasattr(self.strategy, 'shutdown'):

@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
       take_profit: body.takeProfit || null,
       signal_mode: body.signalMode || null,
       signal_data: body.signalData || null,
+      exchange_provider: body.exchangeProvider || "capital_com",
       status: "open",
       opened_at: new Date().toISOString(),
     })

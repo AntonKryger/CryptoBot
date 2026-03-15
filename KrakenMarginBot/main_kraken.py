@@ -26,6 +26,7 @@ from src.executor.spot_position_tracker import SpotPositionTracker
 from src.executor.order_manager import OrderManager
 from src.executor.position_watchdog import PositionWatchdog
 from src.notifications.telegram_bot import TelegramNotifier
+from src.notifications.platform_sync import PlatformSync
 
 # Configure logging
 logging.basicConfig(
@@ -72,6 +73,10 @@ class KrakenBot:
         self.notifier = TelegramNotifier(self.config)
         self.strategy.notifier = self.notifier
 
+        # Platform sync
+        self.platform = PlatformSync(self.config)
+        self.watchdog.platform_sync = self.platform
+
         # Trade executor
         self.executor = TradeExecutor(self.client, self.risk, self.config)
 
@@ -85,6 +90,7 @@ class KrakenBot:
             executor=self.executor
         )
         self.watchdog.strategy = self.strategy
+        self.watchdog.platform_sync = None  # Set after platform init
 
         # Trading config
         trading_cfg = self.config.get("trading", {})
@@ -189,6 +195,10 @@ class KrakenBot:
             f"Balance: ${balance_info['balance']:.2f}"
         )
 
+        # Register with SaaS platform
+        self.platform.register()
+        self.platform.send_status("running")
+
         # Apply scan offset for API rate limiting across bots
         if self.scan_offset > 0:
             logger.info(f"Scan offset: waiting {self.scan_offset}s before first scan")
@@ -225,6 +235,13 @@ class KrakenBot:
 
     def _scan_cycle(self):
         """Main scan: iterate coins, detect regime, run strategy, execute trades."""
+        # Platform sync: heartbeat + kill switch check (every 5th cycle)
+        platform_killed = self.platform.on_scan_cycle()
+        if platform_killed:
+            self.notifier.notify_kill_switch("Platform kill switch activated")
+            self._running = False
+            return
+
         # Check kill switch
         balance_info = self.client.get_account_balance()
         if not balance_info:
@@ -308,6 +325,14 @@ class KrakenBot:
                 if current_balance > 0 and fill_size and fill_price:
                     fill_exposure = (fill_size * fill_price) / current_balance * 100
                     self.coordinator.add_coin_exposure(fill["epic"], fill_exposure)
+                # Sync grid fill to platform
+                self.platform.sync_trade_open(
+                    deal_id=fill.get("order_id", ""),
+                    epic=fill.get("epic", ""),
+                    direction=fill.get("side", "BUY"),
+                    size=fill_size, entry_price=fill_price,
+                    signal_mode="grid",
+                )
 
         # Position reconciliation every 5 minutes (ChatGPT: sync local vs exchange)
         now_ts = time.time()
@@ -476,6 +501,14 @@ class KrakenBot:
                 self.coordinator.lock_coin(epic, exposure_pct=exposure_pct)
                 self.coordinator.clear_trade_request(epic)
                 self.strategy.on_position_opened({"epic": epic, "deal_id": deal_ref})
+                self.platform.sync_trade_open(
+                    deal_id=deal_ref, epic=epic, direction=direction,
+                    size=fill_size, entry_price=fill_price,
+                    stop_loss=signal.get("stop_loss"),
+                    take_profit=signal.get("take_profit"),
+                    signal_mode=self.strategy_type,
+                    signal_data=signal.get("details"),
+                )
                 self.notifier.notify_trade(
                     direction, epic, signal.get("size", 0),
                     signal["entry_price"], signal.get("stop_loss", 0),
@@ -759,6 +792,7 @@ class KrakenBot:
         self._running = False
         self.watchdog.stop()
         self.notifier.stop_command_listener()
+        self.platform.send_status("stopped")
 
         # Grid bot: cancel all orders on shutdown
         if self.strategy_type == "grid" and hasattr(self.strategy, 'shutdown'):

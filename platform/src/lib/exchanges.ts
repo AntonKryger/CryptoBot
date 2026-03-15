@@ -46,7 +46,7 @@ export const EXCHANGE_PROVIDERS: Record<ExchangeId, ExchangeProvider> = {
   kraken: {
     id: "kraken",
     name: "Kraken",
-    status: "coming_soon",
+    status: "active",
     logo: "/exchanges/kraken.svg",
     hasEnvironments: false,
     credentialFields: [

@@ -76,6 +76,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true });
     }
 
+    if (exchange === "kraken") {
+      try {
+        const ccxt = await import("ccxt");
+        const client = new ccxt.kraken({
+          apiKey: credentials.apiKey,
+          secret: credentials.apiSecret,
+          enableRateLimit: true,
+        });
+        const balance = await client.fetchBalance();
+        return NextResponse.json({
+          success: true,
+          balance: balance.total,
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Unknown Kraken error";
+        return NextResponse.json(
+          { error: `Kraken verification failed: ${message}` },
+          { status: 400 }
+        );
+      }
+    }
+
     // Coming-soon exchanges should never reach here (blocked above),
     // but just in case:
     return NextResponse.json(
