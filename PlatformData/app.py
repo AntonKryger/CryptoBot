@@ -32,8 +32,8 @@ else:
 
 exchange = ccxt.kraken(exchange_config)
 
-# Symbol aliases (BTC → XBT for Kraken)
-SYMBOL_ALIASES = {"BTC": "XBT"}
+# ccxt uses standard symbols (BTC/USD), not Kraken-native (XBT/USD)
+# No aliases needed — ccxt handles symbol normalization internally
 
 # Resolution map: our names → ccxt timeframes
 RESOLUTION_MAP = {
@@ -69,10 +69,6 @@ def _normalize_pair(epic: str) -> str:
     for quote in ("USD", "EUR", "GBP"):
         if clean.endswith(quote):
             base = clean[: -len(quote)]
-            # Apply aliases
-            for old, new in SYMBOL_ALIASES.items():
-                if base == old:
-                    base = new
             return f"{base}/{quote}"
     return epic
 
