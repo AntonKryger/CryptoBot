@@ -22,38 +22,50 @@ interface ApiCandle {
 
 interface ChartAIChatProps {
   selectedCoin: string;
+  selectedTimeframe: string;
+  onTimeframeChange: (tf: string) => void;
   className?: string;
 }
 
-export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
-  const coinName = selectedCoin.replace("USD", "");
+const TIMEFRAMES = [
+  { value: "MINUTE_15", label: "15m" },
+  { value: "HOUR", label: "1H" },
+  { value: "HOUR_4", label: "4H" },
+  { value: "DAY", label: "1D" },
+];
 
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content: `Hej! Jeg analyserer **${coinName}/USD** live fra Kraken. Spørg mig om hvad som helst — trend, support/resistance, entry/exit, eller bare "hvad sker der?"`,
-      timestamp: new Date(),
-    },
-  ]);
+function makeWelcome(coin: string): Message {
+  const name = coin.replace("USD", "").replace("/", "");
+  return {
+    id: "welcome",
+    role: "assistant",
+    content: `Hej! Jeg analyserer **${name}/USD** live fra Kraken. Spørg mig om hvad som helst — trend, support/resistance, entry/exit, eller bare "hvad sker der?"`,
+    timestamp: new Date(),
+  };
+}
+
+export function ChartAIChat({ selectedCoin, selectedTimeframe, onTimeframeChange, className }: ChartAIChatProps) {
+  const coinName = selectedCoin.replace("USD", "").replace("/", "");
+
+  // Chat history per coin — persists when switching coins
+  const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>({});
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedTimeframe, setSelectedTimeframe] = useState("HOUR");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Update welcome message when coin changes
-  useEffect(() => {
-    const name = selectedCoin.replace("USD", "");
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content: `Hej! Jeg analyserer **${name}/USD** live fra Kraken. Spørg mig om hvad som helst — trend, support/resistance, entry/exit, eller bare "hvad sker der?"`,
-        timestamp: new Date(),
-      },
-    ]);
-  }, [selectedCoin]);
+  // Get messages for current coin (with welcome fallback)
+  const messages = chatHistories[selectedCoin] || [makeWelcome(selectedCoin)];
+
+  const setMessages = useCallback(
+    (updater: (prev: Message[]) => Message[]) => {
+      setChatHistories((prev) => ({
+        ...prev,
+        [selectedCoin]: updater(prev[selectedCoin] || [makeWelcome(selectedCoin)]),
+      }));
+    },
+    [selectedCoin]
+  );
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -89,7 +101,6 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
     setIsLoading(true);
 
     try {
-      // Fetch fresh candle data for AI context
       const candles = await fetchCandles();
 
       const resp = await fetch("/api/chart-analysis", {
@@ -107,9 +118,10 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        responseText = err.error === "AI analysis not configured"
-          ? "AI-analyse er ikke konfigureret endnu. Sæt ANTHROPIC_API_KEY i Vercel env vars."
-          : "Beklager, der opstod en fejl. Prøv igen.";
+        responseText =
+          err.error === "AI analysis not configured"
+            ? "AI-analyse er ikke konfigureret endnu. Sæt ANTHROPIC_API_KEY i Vercel env vars."
+            : "Beklager, der opstod en fejl. Prøv igen.";
       } else {
         const data = await resp.json();
         responseText = data.response;
@@ -160,17 +172,12 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
           </div>
         </div>
 
-        {/* Timeframe selector for AI context */}
+        {/* Timeframe selector */}
         <div className="flex gap-0.5">
-          {[
-            { value: "MINUTE_15", label: "15m" },
-            { value: "HOUR", label: "1H" },
-            { value: "HOUR_4", label: "4H" },
-            { value: "DAY", label: "1D" },
-          ].map((tf) => (
+          {TIMEFRAMES.map((tf) => (
             <button
               key={tf.value}
-              onClick={() => setSelectedTimeframe(tf.value)}
+              onClick={() => onTimeframeChange(tf.value)}
               className={cn(
                 "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
                 selectedTimeframe === tf.value
@@ -185,7 +192,7 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-[300px] max-h-[500px]">
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
         {messages.map((msg) => (
           <div
             key={msg.id}

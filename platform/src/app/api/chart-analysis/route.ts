@@ -134,16 +134,24 @@ export async function POST(request: NextRequest) {
       ? summarizeCandles(candles, coin)
       : `COIN: ${coin}\nNo candle data available.`;
 
+    const tfLabel: Record<string, string> = {
+      MINUTE_15: "15-minutters",
+      HOUR: "1-times",
+      HOUR_4: "4-timers",
+      DAY: "daglige",
+    };
+    const tfDisplay = tfLabel[timeframe] || timeframe || "1-times";
+
     const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
     const message = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 512,
-      system: SYSTEM_PROMPT,
+      system: `${SYSTEM_PROMPT}\n\nBrugeren kigger på ${tfDisplay} candles. Tilpas din analyse til denne timeframe.`,
       messages: [
         {
           role: "user",
-          content: `Timeframe: ${timeframe || "HOUR"}\n\n${chartContext}\n\nBrugerens spørgsmål: ${question}`,
+          content: `Timeframe: ${tfDisplay} candles\n\n${chartContext}\n\nBrugerens spørgsmål: ${question}`,
         },
       ],
     });

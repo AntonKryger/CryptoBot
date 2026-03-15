@@ -22,6 +22,7 @@
     "protobufjs": "^8.0.0",
     "react": "^18",
     "react-dom": "^18",
+    "react-resizable-panels": "^4.7.3",
     "recharts": "^3.8.0",
     "stripe": "^20.4.1",
     "tailwind-merge": "^3.5.0"

@@ -1,30 +1,59 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { TradingChart } from "@/components/dashboard/TradingChart";
 import { ChartAIChat } from "@/components/dashboard/ChartAIChat";
+import { Panel, Group, Separator } from "react-resizable-panels";
+import { GripVertical } from "lucide-react";
 
 export default function ChartsPage() {
   const [selectedCoin, setSelectedCoin] = useState("BTCUSD");
+  const [selectedTimeframe, setSelectedTimeframe] = useState("HOUR");
+
+  const handleCoinChange = useCallback((epic: string) => {
+    setSelectedCoin(epic);
+  }, []);
 
   return (
     <DashboardLayout pageTitle="Live Charts">
-      <div className="space-y-6">
-        {/* Chart + AI Chat layout */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6">
-          {/* Main chart */}
-          <TradingChart
-            className="min-h-[500px]"
-            onCoinChange={(epic) => setSelectedCoin(epic)}
-          />
+      {/* Desktop: resizable side-by-side panels */}
+      <div className="hidden xl:block h-[calc(100vh-140px)] min-h-[550px]">
+        <Group orientation="horizontal" className="h-full">
+          <Panel defaultSize={65} minSize={40}>
+            <TradingChart
+              className="h-full"
+              onCoinChange={handleCoinChange}
+            />
+          </Panel>
 
-          {/* AI Chat sidebar */}
-          <ChartAIChat
-            selectedCoin={selectedCoin}
-            className="h-[500px] xl:h-auto"
-          />
-        </div>
+          <Separator className="w-2 flex items-center justify-center group hover:bg-accent/10 transition-colors rounded">
+            <GripVertical className="h-4 w-4 text-text-muted group-hover:text-accent transition-colors" />
+          </Separator>
+
+          <Panel defaultSize={35} minSize={20}>
+            <ChartAIChat
+              selectedCoin={selectedCoin}
+              selectedTimeframe={selectedTimeframe}
+              onTimeframeChange={setSelectedTimeframe}
+              className="h-full"
+            />
+          </Panel>
+        </Group>
+      </div>
+
+      {/* Mobile: stacked */}
+      <div className="xl:hidden space-y-6">
+        <TradingChart
+          className="min-h-[500px]"
+          onCoinChange={handleCoinChange}
+        />
+        <ChartAIChat
+          selectedCoin={selectedCoin}
+          selectedTimeframe={selectedTimeframe}
+          onTimeframeChange={setSelectedTimeframe}
+          className="h-[500px]"
+        />
       </div>
     </DashboardLayout>
   );
