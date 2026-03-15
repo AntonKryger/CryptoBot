@@ -75,8 +75,9 @@ class KrakenBot:
         # Trade executor
         self.executor = TradeExecutor(self.client, self.risk, self.config)
 
-        # Order manager (for Grid bot)
+        # Order manager (for Grid bot) — with position tracker for fill persistence
         self.order_manager = OrderManager(self.client, self.config)
+        self.order_manager.position_tracker = self.position_tracker
 
         # Position watchdog
         self.watchdog = PositionWatchdog(
@@ -163,6 +164,9 @@ class KrakenBot:
                     logger.info(f"Cleaned up {cancelled} orphan orders from previous run")
             except Exception as e:
                 logger.warning(f"Orphan order cleanup failed: {e}")
+
+        # Reconcile state with Kraken on startup
+        self._reconcile_on_startup()
 
         # Clean up stale coordinator locks
         self.coordinator.cleanup_stale_locks()
@@ -592,6 +596,65 @@ class KrakenBot:
 
         if reconciled > 0:
             logger.info(f"[RECONCILE] Reconciled {reconciled} orphan positions")
+
+    def _reconcile_on_startup(self):
+        """Reconcile position tracker DB with actual Kraken state at boot.
+
+        Detects orphaned positions (Kraken has margin in use but tracker DB is empty)
+        and logs open orders that survived from a previous run.
+        """
+        try:
+            tracker = self.client.position_tracker
+            tracked = tracker.get_open_positions() if tracker else []
+
+            # Check margin status from Kraken API
+            margin_status = self.client.get_margin_status()
+            margin_used = float(margin_status.get("margin_used", 0)) if margin_status else 0
+
+            # Check open orders on Kraken
+            open_orders = self.client.fetch_open_orders()
+
+            logger.info(
+                f"[RECONCILE] Startup: tracked={len(tracked)} positions, "
+                f"margin_used=${margin_used:.2f}, open_orders={len(open_orders)}"
+            )
+
+            # Orphan detection: Kraken has margin in use but DB is empty
+            if margin_used > 0.01 and len(tracked) == 0:
+                logger.warning(
+                    f"[RECONCILE] Kraken has ${margin_used:.2f} margin in use "
+                    f"but position tracker DB is empty — orphaned position detected"
+                )
+                self.notifier.send(
+                    f"⚠️ <b>Reconciliation Warning</b>\n"
+                    f"Kraken margin used: ${margin_used:.2f}\n"
+                    f"Position tracker DB is empty — orphaned position detected\n"
+                    f"Manual intervention may be needed"
+                )
+
+            # DB has positions but Kraken has no margin — positions were closed externally
+            if margin_used < 0.01 and len(tracked) > 0:
+                logger.warning(
+                    f"[RECONCILE] DB has {len(tracked)} open positions but Kraken margin is $0 "
+                    f"— closing stale DB entries"
+                )
+                for pos in tracked:
+                    try:
+                        tracker.close_position(pos["deal_id"], exit_price=0, profit_loss=0)
+                    except Exception as e:
+                        logger.error(f"[RECONCILE] Failed to close stale position {pos['deal_id']}: {e}")
+
+            # Log open orders from Kraken (may be from previous grid run)
+            if open_orders:
+                logger.info(f"[RECONCILE] {len(open_orders)} open orders on Kraken at startup")
+                for o in open_orders:
+                    logger.info(
+                        f"  {o['epic']} {o['side']} {o['type']} "
+                        f"@ {o['price']} x {o['amount']}"
+                    )
+
+        except Exception as e:
+            logger.error(f"[RECONCILE] Startup reconciliation failed: {e}")
 
     def _register_commands(self):
         """Register Telegram commands."""
