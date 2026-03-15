@@ -23,6 +23,7 @@ services:
     build:
       context: ./AIBot
     container_name: cryptobot-ad1
+    profiles: ["disabled"]
     restart: always
     volumes:
       - ./AIBot/Demo/AD1/config.yaml:/app/config.yaml:ro
