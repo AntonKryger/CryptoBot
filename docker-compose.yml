@@ -97,9 +97,9 @@ services:
       - "0.0.0.0:5000:5000"
     environment:
       - BOT_DATA_DIR=/app/bot_data
-      - CAPITAL_EMAIL=anton.nellemann@gmail.com
-      - CAPITAL_PASSWORD=Ypk26pdn!claudebot
-      - CAPITAL_API_KEY=C7VkG2cJuPoiqW2B
+      - CAPITAL_EMAIL=${CAPITAL_EMAIL:-}
+      - CAPITAL_PASSWORD=${CAPITAL_PASSWORD:-}
+      - CAPITAL_API_KEY=${CAPITAL_API_KEY:-}
     volumes:
       - ./RuleBot/Live/RL1/data:/app/bot_data/rl1:ro
       - ./RuleBot/Demo/RD1/data:/app/bot_data/rd1:ro

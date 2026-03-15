@@ -15,7 +15,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [PlatformData] %(mes
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=[
+    "https://platform-one-tawny.vercel.app",
+    "http://localhost:3000",
+])
 
 # --- Kraken exchange (platform-dedicated API key) ---
 KRAKEN_API_KEY = os.environ.get("KRAKEN_API_KEY", "")
@@ -86,7 +89,10 @@ def prices():
     """OHLCV candle data — cached, rate-limited, isolated from bots."""
     epic = request.args.get("epic", "BTCUSD")
     resolution = request.args.get("resolution", "HOUR")
-    limit = min(int(request.args.get("limit", "200")), 720)
+    try:
+        limit = min(int(request.args.get("limit", "200")), 720)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid limit parameter"}), 400
 
     timeframe = RESOLUTION_MAP.get(resolution)
     if not timeframe:
@@ -155,7 +161,10 @@ def ticker():
 def orderbook():
     """Order book depth — bids and asks."""
     epic = request.args.get("epic", "BTCUSD")
-    depth = min(int(request.args.get("depth", "20")), 100)
+    try:
+        depth = min(int(request.args.get("depth", "20")), 100)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid depth parameter"}), 400
     pair = _normalize_pair(epic)
     cache_key = f"orderbook:{pair}:{depth}"
 

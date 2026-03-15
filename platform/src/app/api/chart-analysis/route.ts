@@ -119,6 +119,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing question or coin" }, { status: 400 });
     }
 
+    // Input validation — prevent cost abuse
+    if (typeof question !== "string" || question.length > 500) {
+      return NextResponse.json({ error: "Question too long (max 500 chars)" }, { status: 400 });
+    }
+    if (!/^[A-Z0-9/]{3,15}$/i.test(coin)) {
+      return NextResponse.json({ error: "Invalid coin" }, { status: 400 });
+    }
+    if (Array.isArray(candles) && candles.length > 500) {
+      return NextResponse.json({ error: "Too many candles (max 500)" }, { status: 400 });
+    }
+
     const chartContext = candles?.length
       ? summarizeCandles(candles, coin)
       : `COIN: ${coin}\nNo candle data available.`;

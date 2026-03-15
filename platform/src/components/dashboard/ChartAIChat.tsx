@@ -219,7 +219,7 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
               ))}
             </div>
             {msg.role === "user" && (
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-text-muted/20 mt-0.5">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-bg-card-hover mt-0.5">
                 <User className="h-3.5 w-3.5 text-text-secondary" />
               </div>
             )}
@@ -269,7 +269,7 @@ export function ChartAIChat({ selectedCoin, className }: ChartAIChatProps) {
             className={cn(
               "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors",
               input.trim() && !isLoading
-                ? "bg-accent text-white hover:bg-accent/90"
+                ? "bg-accent text-bg-primary hover:bg-accent/90"
                 : "bg-bg-card-hover text-text-muted cursor-not-allowed"
             )}
           >

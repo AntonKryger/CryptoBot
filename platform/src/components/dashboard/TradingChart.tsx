@@ -39,12 +39,12 @@ interface TradingChartProps {
 }
 
 function TradingChartInner({ className, onCoinChange }: TradingChartProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [selectedSymbol, setSelectedSymbol] = useState("KRAKEN:BTCUSD");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const selectedCoinInfo = ALL_COINS.find((c) => c.symbol === selectedSymbol);
 
@@ -61,51 +61,31 @@ function TradingChartInner({ className, onCoinChange }: TradingChartProps) {
     ? document.documentElement.getAttribute("data-theme") !== "light"
     : true;
 
-  // Embed the TradingView Advanced Chart Widget
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Clear previous widget
-    containerRef.current.innerHTML = "";
-
-    const widgetContainer = document.createElement("div");
-    widgetContainer.className = "tradingview-widget-container";
-    widgetContainer.style.height = "100%";
-    widgetContainer.style.width = "100%";
-
-    const widgetDiv = document.createElement("div");
-    widgetDiv.className = "tradingview-widget-container__widget";
-    widgetDiv.style.height = "100%";
-    widgetDiv.style.width = "100%";
-    widgetContainer.appendChild(widgetDiv);
-
-    const script = document.createElement("script");
-    script.type = "text/javascript";
-    script.src = "https://s.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
-    script.async = true;
-    script.textContent = JSON.stringify({
+  // Build TradingView embed URL
+  const tvUrl = useMemo(() => {
+    const params = new URLSearchParams({
       symbol: selectedSymbol,
       interval: "60",
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone: typeof window !== "undefined"
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : "Europe/Copenhagen",
       theme: isDark ? "dark" : "light",
       style: "1",
       locale: "da_DK",
-      allow_symbol_change: true,
-      support_host: "https://www.tradingview.com",
-      hide_side_toolbar: false,
-      details: true,
-      hotlist: false,
-      calendar: false,
-      studies: ["STD;SMA", "STD;RSI"],
-      show_popup_button: true,
+      toolbar_bg: "rgba(0,0,0,0)",
+      enable_publishing: "false",
+      allow_symbol_change: "true",
+      hide_side_toolbar: "false",
+      details: "true",
+      hotlist: "false",
+      calendar: "false",
+      studies: '["STD;SMA","STD;RSI"]',
+      show_popup_button: "true",
       popup_width: "1200",
       popup_height: "800",
-      width: "100%",
-      height: "100%",
+      save_image: "true",
     });
-    widgetContainer.appendChild(script);
-
-    containerRef.current.appendChild(widgetContainer);
+    return `https://s.tradingview.com/widgetembed/?${params.toString()}#{"symbol":"${selectedSymbol}","frameElementId":"tv_embed","locale":"da_DK"}`;
   }, [selectedSymbol, isDark]);
 
   // Close dropdown
@@ -128,6 +108,7 @@ function TradingChartInner({ className, onCoinChange }: TradingChartProps) {
 
   const handleCoinChange = (symbol: string) => {
     setSelectedSymbol(symbol);
+    setIframeLoaded(false);
     setSearchOpen(false);
     setSearchQuery("");
     onCoinChange?.(symbol.replace("KRAKEN:", ""));
@@ -227,8 +208,22 @@ function TradingChartInner({ className, onCoinChange }: TradingChartProps) {
         </div>
       </div>
 
-      {/* TradingView Advanced Chart Widget */}
-      <div ref={containerRef} className="flex-1 min-h-[550px]" />
+      {/* TradingView Advanced Chart */}
+      <div className="relative flex-1 min-h-[550px]">
+        {!iframeLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-bg-card">
+            <div className="h-8 w-8 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+          </div>
+        )}
+        <iframe
+          id="tv_embed"
+          title={`TradingView chart for ${selectedCoinInfo?.name || "cryptocurrency"}`}
+          src={tvUrl}
+          onLoad={() => setIframeLoaded(true)}
+          className="w-full h-full border-0"
+          allowFullScreen
+        />
+      </div>
     </div>
   );
 }
