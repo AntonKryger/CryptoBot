@@ -290,6 +290,9 @@ class OrderManager:
         for order_id, info in self._orders.items():
             if info["status"] != "open":
                 continue
+            # Grid orders are permanent — managed by grid strategy rebalance, not timeout
+            if info.get("type") == "grid":
+                continue
             try:
                 placed = datetime.fromisoformat(info["placed_at"])
                 age_seconds = (now - placed).total_seconds()
